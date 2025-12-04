@@ -2072,7 +2072,7 @@ class MultiSitesOddsTrackerFinal:
     # PATCH: Ajout colonne résultat par marché dans Google Sheets
 
     # ⏩ Modifie ta méthode _prepare_sheets_data pour ajouter le score correspondant au marché sur chaque onglet
-    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[List]]:
+    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[Dict]]:
         """Préparer données pour Google Sheets AVEC colonnes matchID et résultats -- alignement strict!"""
 
         first_match = list(matches_info.values())[0]
@@ -2157,16 +2157,12 @@ class MultiSitesOddsTrackerFinal:
                 header.append("Résultat_HalfTime")
             # (ajouter ici d'autres colonnes techniques au besoin)
 
-            # Construction stricte
-            final_row = [row.get(col, "") for col in header]
+            # ✅ FIX: Construction stricte avec DICTIONNAIRE (garantit ordre des colonnes)
+            final_row_dict = {col: row.get(col, "") for col in header}
 
             if sheet_name not in sheets_data:
                 sheets_data[sheet_name] = []
-            sheets_data[sheet_name].append(final_row)
-
-            # Pour une première row, stocke le header aussi
-            if f"{sheet_name}__header" not in sheets_data:
-                sheets_data[f"{sheet_name}__header"] = header
+            sheets_data[sheet_name].append(final_row_dict)
 
         return sheets_data
 
