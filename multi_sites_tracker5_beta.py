@@ -615,6 +615,7 @@ class MultiSitesOddsTrackerFinal:
     
     # Limits
     MAX_MATCHING_MATCHES = 100  # Prevent sheet overload
+    CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES = 300  # 5 hours
 
     def __init__(self, output_dir="multi_sites_odds"):
         self.output_dir = Path(output_dir)
@@ -818,9 +819,6 @@ class MultiSitesOddsTrackerFinal:
 
     def _cleanup_old_matches(self):
         """Remove matches that finished more than 5 hours ago to prevent memory leak"""
-        # Threshold for cleanup (in minutes)
-        CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES = 300
-        
         now = now_mauritius()
         to_remove = []
         
@@ -833,8 +831,8 @@ class MultiSitesOddsTrackerFinal:
             start_time = first_match.get("start_time", "")
             time_diff = self._get_time_until_match(start_time)
             
-            # Remove if match finished > 5 hours ago (time_diff < -300 minutes)
-            if time_diff is not None and time_diff < -CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES:
+            # Remove if match finished > threshold (e.g., -300 minutes = 5 hours ago)
+            if time_diff is not None and time_diff < -self.CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES:
                 to_remove.append(eid)
         
         for eid in to_remove:
@@ -844,6 +842,12 @@ class MultiSitesOddsTrackerFinal:
                 del self.captured_odds[eid]
             if eid in self.closed_sites:
                 del self.closed_sites[eid]
+            if eid in self.early_closed:
+                del self.early_closed[eid]
+            if eid in self.completed_matches:
+                self.completed_matches.discard(eid)
+            if eid in self.matches_by_external_id:
+                del self.matches_by_external_id[eid]
         
         if to_remove:
             print(f"   🧹 Cleaned up {len(to_remove)} old matches from memory")
@@ -922,7 +926,11 @@ class MultiSitesOddsTrackerFinal:
                 return None
 
             except Exception as e:
-                error_msg = f"{type(e).__name__}: {str(e)[:self.ERROR_MESSAGE_MAX_LENGTH]}"
+                error_str = str(e)
+                # Truncate with ellipsis if too long
+                if len(error_str) > self.ERROR_MESSAGE_MAX_LENGTH:
+                    error_str = error_str[:self.ERROR_MESSAGE_MAX_LENGTH] + "..."
+                error_msg = f"{type(e).__name__}: {error_str}"
                 last_error = error_msg
                 if site_name:
                     print(f"      ⚠️ Fetch error ({site_name}): {error_msg}")
