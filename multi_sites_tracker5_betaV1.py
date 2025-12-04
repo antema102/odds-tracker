@@ -1935,9 +1935,11 @@ class MultiSitesOddsTrackerFinal:
         except Exception as e:
             print(f"      ❌ Erreur finalisation batch: {e}")
 
-    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[Dict]]:
-        """Préparer les données pour Google Sheets"""
+    # PATCH: Ajout colonne résultat par marché dans Google Sheets
 
+    # ⏩ Modifie ta méthode _prepare_sheets_data pour ajouter le score correspondant au marché sur chaque onglet
+    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[Dict]]:
+        # ... code avant ...
         first_match = list(matches_info.values())[0]
 
         competition_name = first_match.get("competition_name", "")
@@ -1964,19 +1966,24 @@ class MultiSitesOddsTrackerFinal:
 
         for market_key in all_market_keys:
             sheet_name = MARKET_SHEET_MAPPING.get(market_key, market_key[:31])
-
             row = base_data.copy()
+
+            # Ajoute colonne résultat sur le bon onglet
+            if sheet_name == "1X2_FullTime":
+                row["Résultat_FullTime"] = ""
+            elif sheet_name == "1X2_HalfTime":
+                row["Résultat_HalfTime"] = ""
+            elif sheet_name == "1X2_2ndHalf":
+                row["Résultat_SecondHalf"] = ""
+
+            # Tu peux ajouter ici les matchIDs cachés si besoin...
 
             for site_key in SITES.keys():
                 site_name = SITES[site_key]["name"]
-
                 if site_key in self.captured_odds[external_id]:
-                    markets = self.captured_odds[external_id][site_key].get(
-                        "markets", {})
-
+                    markets = self.captured_odds[external_id][site_key].get("markets", {})
                     if market_key in markets:
-                        odds_str = self._format_odds_for_display(
-                            markets[market_key].get("odds", {}))
+                        odds_str = self._format_odds_for_display(markets[market_key].get("odds", {}))
                         row[site_name] = odds_str
                     else:
                         row[site_name] = ""
@@ -1988,6 +1995,7 @@ class MultiSitesOddsTrackerFinal:
             sheets_data[sheet_name].append(row)
 
         return sheets_data
+
 
     def _write_to_local_excel(self, sheets_data: Dict[str, List[dict]]):
         """Écrire dans Excel local"""
