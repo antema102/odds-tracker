@@ -419,7 +419,7 @@ class GoogleSheetsManager:
                 # TIMEOUT via gspread
                 import socket
                 original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(30)  # 30s timeout
+                socket.setdefaulttimeout(60)  # ✅ ENHANCEMENT #6: Increased from 30s to 60s for slow connections
 
                 try:
                     result = func()
@@ -1002,6 +1002,39 @@ class MultiSitesOddsTrackerFinal:
 
                 # ✅ NOUVEAU : Mettre à jour SEULEMENT les matchs modifiés
                 updated_count = 0
+                
+                # ✅ BUG FIX #1: Calculate max number of similar matches across ALL changed matches
+                max_matches_per_row = 0
+                for external_id in changed_matches.keys():
+                    match_info = self.matches_info_archive.get(external_id, {})
+                    if not match_info:
+                        continue
+                    sites_odds = self.daily_combinaison_cache.get(external_id, {})
+                    if site_key not in sites_odds:
+                        continue
+                    
+                    odds_string = sites_odds[site_key]
+                    odds_key = odds_string.replace(" ", "")
+                    all_matches = combinations_index[site_key].get(odds_key, [])
+                    matching_matches = [m for m in all_matches if m.get("external_id") != external_id]
+                    
+                    if len(matching_matches) > max_matches_per_row:
+                        max_matches_per_row = len(matching_matches)
+                
+                # ✅ BUG FIX #1: Rebuild dynamic header
+                base_header = ["Date", "Match Principal", "Compétition", "Heure Match", "Cotes 1X2"]
+                for i in range(1, max_matches_per_row + 1):
+                    base_header.append(f"Match {i}")
+                    base_header.append(f"Heure {i}")
+                base_header.append("Nombre Total")
+                
+                header = base_header  # Use dynamic header
+                
+                # ✅ BUG FIX #1: Pad existing rows with empty strings if they have fewer columns
+                for match_name, row in existing_rows.items():
+                    if len(row) < len(header):
+                        row.extend([""] * (len(header) - len(row)))
+                    existing_rows[match_name] = row
 
                 for external_id in changed_matches.keys():
                     match_info = self.matches_info_archive.get(external_id, {})
@@ -1141,10 +1174,12 @@ class MultiSitesOddsTrackerFinal:
                 odds_1x2 = self._extract_1x2_from_getsport_match(match_str)
                 if not odds_1x2:
                     continue
-                # Dernière connue dans le cache RAM
+                
+                # ✅ BUG FIX #3: Capture old value FIRST (before updating cache)
                 old_odds = self.daily_combinaison_cache.get(
                     external_id, {}).get(site_key)
-                # Only log change if we had previous odds (not None)
+                
+                # ✅ BUG FIX #3: Check for changes BEFORE updating cache
                 if old_odds is not None and old_odds != odds_1x2:
                     # LOG le changement !
                     print(f"🔄 CHANGEMENT {external_id} ({SITES[site_key]['name']}) : "
@@ -1157,7 +1192,8 @@ class MultiSitesOddsTrackerFinal:
                         "match_name": match_info.get("match_name", ""),
                         "site_key": site_key
                     }
-                # MAJ du cache en RAM (always update cache, even for first capture)
+                
+                # ✅ BUG FIX #3: Update cache AFTER comparison
                 if external_id not in self.daily_combinaison_cache:
                     self.daily_combinaison_cache[external_id] = {}
                 self.daily_combinaison_cache[external_id][site_key] = odds_1x2
@@ -2067,19 +2103,7 @@ class MultiSitesOddsTrackerFinal:
             sheet_name = MARKET_SHEET_MAPPING.get(market_key, market_key[:31])
             row = base_data.copy()
 
-            # Colonnes résultat par type de marché
-            if sheet_name == "1X2_FullTime":
-                row["Résultat_FullTime"] = ""
-            elif sheet_name == "1X2_HalfTime":
-                row["Résultat_HalfTime"] = ""
-            elif sheet_name == "1X2_2ndHalf":
-                row["Résultat_SecondHalf"] = ""
-            elif "OverUnder" in sheet_name and "FT" in sheet_name:
-                row["Résultat_FullTime"] = ""
-            elif "OverUnder" in sheet_name and "HT" in sheet_name:
-                row["Résultat_HalfTime"] = ""
-
-            # Colonnes cotes + matchID (pour TOUS les sites)
+            # ✅ BUG FIX #2: Add odds columns + matchID columns FIRST (before result columns)
             for site_key in SITES.keys():
                 site_name = SITES[site_key]["name"]
 
@@ -2100,15 +2124,27 @@ class MultiSitesOddsTrackerFinal:
                     row[f"matchID_{site_name}"] = match_info.get("match_id", "")
                 else:
                     row[f"matchID_{site_name}"] = ""
+            
+            # ✅ BUG FIX #2: THEN add result columns (AFTER odds and matchID)
+            if sheet_name == "1X2_FullTime":
+                row["Résultat_FullTime"] = ""
+            elif sheet_name == "1X2_HalfTime":
+                row["Résultat_HalfTime"] = ""
+            elif sheet_name == "1X2_2ndHalf":
+                row["Résultat_SecondHalf"] = ""
+            elif "OverUnder" in sheet_name and "FT" in sheet_name:
+                row["Résultat_FullTime"] = ""
+            elif "OverUnder" in sheet_name and "HT" in sheet_name:
+                row["Résultat_HalfTime"] = ""
 
             # ==== RIGUEUR DANS L'ORDRE ====
-            # HEADER STRICT (ordre figé pour chaque ligne):
+            # ✅ BUG FIX #2: HEADER STRICT with correct order (result columns AFTER odds/matchID)
             header = [
                 "Date", "Heure", "External ID", "Match", "Compétition", "Heure Match",
                 "StevenHills", "SuperScore", "ToteLePEP", "PlayOnline",
                 "matchID_StevenHills", "matchID_SuperScore", "matchID_ToteLePEP", "matchID_PlayOnline",
             ]
-            # Colonne résultat selon le marché traité
+            # ✅ BUG FIX #2: Colonne résultat selon le marché traité (AFTER odds and matchID)
             if sheet_name == "1X2_FullTime":
                 header.append("Résultat_FullTime")
             elif sheet_name == "1X2_HalfTime":
@@ -2773,7 +2809,14 @@ class MultiSitesOddsTrackerFinal:
                 return None
 
             # Format identique à _extract_1x2_full_time
-            return f"{home_odd:.2f} / {draw_odd:.2f} / {away_odd:.2f}"
+            odds_formatted = f"{home_odd:.2f} / {draw_odd:.2f} / {away_odd:.2f}"
+            
+            # ✅ ENHANCEMENT #7: Validate format
+            import re
+            if not re.match(r'^\d+\.\d{2} / \d+\.\d{2} / \d+\.\d{2}$', odds_formatted):
+                return None
+            
+            return odds_formatted
 
         except (ValueError, IndexError, AttributeError):
             return None
@@ -2954,12 +2997,12 @@ class MultiSitesOddsTrackerFinal:
 
             for site_key, matches in all_matches_by_site.items():
                 for external_id, match_info in matches.items():
-                    # ✅ AJOUT : Vérifier que le match est bien du jour actuel
+                    # ✅ BUG FIX #4: Check if match is within 24 hours (not just today)
                     start_time_str = match_info.get("start_time", "")
 
                     try:
                         # Parser la date du match
-                        match_time_str = start_time_str. replace(',', '').strip()
+                        match_time_str = start_time_str.replace(',', '').strip()
                         current_year = now_mauritius().year
                         if str(current_year) not in match_time_str:
                             match_time_str = f"{match_time_str} {current_year}"
@@ -2968,8 +3011,9 @@ class MultiSitesOddsTrackerFinal:
                         if match_dt.tzinfo is None:
                             match_dt = match_dt.replace(tzinfo=MAURITIUS_TZ)
 
-                        # ✅ FILTRE : Ignorer si pas aujourd'hui
-                        if match_dt.date() != today:
+                        # ✅ BUG FIX #4: Use 24-hour window (0-24 hours in the future)
+                        time_diff_hours = (match_dt - now_mauritius()).total_seconds() / 3600
+                        if not (0 <= time_diff_hours <= 24):
                             filtered_out_count += 1
                             continue
 
@@ -3147,6 +3191,10 @@ class MultiSitesOddsTrackerFinal:
         active = []
         now = now_mauritius()
         for external_id, match_info_dict in self.matches_info_archive.items():
+            # ✅ BUG FIX #5: Skip completed matches to prevent memory leak
+            if external_id in self.completed_matches:
+                continue
+            
             # Récupère la première info du match
             if not match_info_dict:
                 continue
