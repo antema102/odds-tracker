@@ -48,7 +48,6 @@ import time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dateutil import parser as date_parser
-import pickle  # Persistence
 
 # Configuration fuseau horaire Maurice
 MAURITIUS_TZ = ZoneInfo("Indian/Mauritius")
@@ -154,47 +153,52 @@ class MatchFinalizationQueue:
 
         # Anti-doublon dans la file
         self.queued_ids: Set[int] = set()
+        
+        # Thread-safety lock for concurrent access
+        self._lock = asyncio.Lock()
 
-    def add_match(self, external_id: int, priority: str = "normal"):
+    async def add_match(self, external_id: int, priority: str = "normal"):
         """Ajouter un match à la queue (anti-doublon + upgrade priorité)"""
-        # Si déjà en file, upgrade éventuelle de priorité
-        if external_id in self.queued_ids:
-            for item in self.queue:
-                if item["external_id"] == external_id:
-                    if priority == "urgent" and item["priority"] == "normal":
-                        item["priority"] = "urgent"
-            return
+        async with self._lock:
+            # Si déjà en file, upgrade éventuelle de priorité
+            if external_id in self.queued_ids:
+                for item in self.queue:
+                    if item["external_id"] == external_id:
+                        if priority == "urgent" and item["priority"] == "normal":
+                            item["priority"] = "urgent"
+                return
 
-        self.queue.append({
-            "external_id": external_id,
-            "priority": priority,
-            "added_at": now_mauritius()
-        })
-        self.queued_ids.add(external_id)
+            self.queue.append({
+                "external_id": external_id,
+                "priority": priority,
+                "added_at": now_mauritius()
+            })
+            self.queued_ids.add(external_id)
 
-    def get_next_batch(self) -> List[int]:
+    async def get_next_batch(self) -> List[int]:
         """Récupérer le prochain batch de matchs"""
-        if not self.queue:
-            return []
-
-        if self.last_batch_time:
-            elapsed = (now_mauritius() - self.last_batch_time).total_seconds()
-            if elapsed < self.min_interval_seconds:
+        async with self._lock:
+            if not self.queue:
                 return []
 
-        urgent = [item for item in self.queue if item["priority"] == "urgent"]
-        normal = [item for item in self.queue if item["priority"] == "normal"]
+            if self.last_batch_time:
+                elapsed = (now_mauritius() - self.last_batch_time).total_seconds()
+                if elapsed < self.min_interval_seconds:
+                    return []
 
-        batch_items = (urgent + normal)[:self.batch_size]
-        batch_ids = [item["external_id"] for item in batch_items]
+            urgent = [item for item in self.queue if item["priority"] == "urgent"]
+            normal = [item for item in self.queue if item["priority"] == "normal"]
 
-        for item in batch_items:
-            self.queue.remove(item)
-            self.queued_ids.discard(item["external_id"])
+            batch_items = (urgent + normal)[:self.batch_size]
+            batch_ids = [item["external_id"] for item in batch_items]
 
-        self.last_batch_time = now_mauritius()
+            for item in batch_items:
+                self.queue.remove(item)
+                self.queued_ids.discard(item["external_id"])
 
-        return batch_ids
+            self.last_batch_time = now_mauritius()
+
+            return batch_ids
 
     def __contains__(self, external_id: int) -> bool:
         return external_id in self.queued_ids
@@ -527,13 +531,16 @@ class GoogleSheetsManager:
                     total_rows_sent += len(data_to_append)
                     feuilles_traitees += 1
 
-                    # PAUSE ADAPTATIVE
+                    # PAUSE ADAPTATIVE - only if quota is getting high
                     if feuilles_traitees % 5 == 0:
-                        print(
-                            f"         ⏸️  Pause quota ({feuilles_traitees}/32 feuilles)...")
-                        await asyncio.sleep(15)  # 15s tous les 5 feuilles
+                        if self.api_call_count >= self.API_QUOTA_HIGH_THRESHOLD:
+                            print(
+                                f"         ⏸️  Pause quota ({feuilles_traitees}/32 feuilles)...")
+                            await asyncio.sleep(15)
+                        else:
+                            await asyncio.sleep(2)  # Short pause
                     else:
-                        await asyncio.sleep(2)  # 2s entre chaque
+                        await asyncio.sleep(2)  # 2s between each
 
                 except Exception as e:
                     print(f"         ❌ '{sheet_name}': {e}")
@@ -594,6 +601,20 @@ class GoogleSheetsManager:
 
 class MultiSitesOddsTrackerFinal:
     """Tracker FINAL avec externalId + Capture dynamique + append + fix boucle infinie"""
+    
+    # Iteration intervals
+    FULL_GETSPORT_INTERVAL = 5
+    DAILY_COMBO_UPDATE_INTERVAL = 3
+    RETRY_WITHOUT_ODDS_INTERVAL = 2
+    HEALTH_REPORT_INTERVAL = 5
+    CLEANUP_INTERVAL = 10
+    
+    # API and error handling
+    API_QUOTA_HIGH_THRESHOLD = 40
+    ERROR_MESSAGE_MAX_LENGTH = 100
+    
+    # Limits
+    MAX_MATCHING_MATCHES = 100  # Prevent sheet overload
 
     def __init__(self, output_dir="multi_sites_odds"):
         self.output_dir = Path(output_dir)
@@ -672,18 +693,19 @@ class MultiSitesOddsTrackerFinal:
 
     # ----- Persistence helpers -----
     def save_cache_to_disk(self, force: bool = False):
-        """Sauvegarde l'état RAM sur disque (pickle) avec anti-spam."""
+        """Sauvegarde l'état RAM sur disque (JSON) avec anti-spam."""
         try:
             now = time.time()
             if not force and (now - self._last_cache_save) < self.cache_save_min_interval:
                 return
+            # Convert sets to lists for JSON serialization
             data = {
                 "captured_odds": dict(self.captured_odds),
                 "matches_info_archive": self.matches_info_archive,
                 "matches_by_external_id": dict(self.matches_by_external_id),
-                "closed_sites": dict(self.closed_sites),
+                "closed_sites": {k: list(v) for k, v in self.closed_sites.items()},
                 "completed_matches": list(self.completed_matches),
-                "early_closed": dict(self.early_closed),
+                "early_closed": {k: list(v) for k, v in self.early_closed.items()},
                 "matches_snapshot": self.matches_snapshot,
                 "matches_without_odds_retry": self.matches_without_odds_retry,
                 "current_date": self.current_date,
@@ -691,10 +713,11 @@ class MultiSitesOddsTrackerFinal:
                 "finalizing_in_progress": list(self.finalizing_in_progress),
                 "saved_at": now_mauritius_str(),
             }
-            with open(self.state_file, 'wb') as f:
-                pickle.dump(data, f)
+            json_file = self.state_file.with_suffix('.json')
+            with open(json_file, 'w') as f:
+                json.dump(data, f, indent=2, default=str)  # default=str for datetime
             self._last_cache_save = now
-            print(f"💾 État sauvegardé ({self.state_file.name})")
+            print(f"💾 État sauvegardé ({json_file.name})")
         except Exception as e:
             print(f"❌ Erreur sauvegarde cache : {e}")
 
@@ -703,13 +726,14 @@ class MultiSitesOddsTrackerFinal:
         return defaultdict(factory, d or {})
 
     def load_cache_from_disk(self):
-        """Charge l'état disque en RAM (pickle) et restaure les defaultdict."""
+        """Charge l'état disque en RAM (JSON) et restaure les defaultdict."""
         try:
-            if not self.state_file.exists():
+            json_file = self.state_file.with_suffix('.json')
+            if not json_file.exists():
                 print("ℹ️ Aucun cache sur disque à charger.")
                 return
-            with open(self.state_file, 'rb') as f:
-                data = pickle.load(f)
+            with open(json_file, 'r') as f:
+                data = json.load(f)
 
             # Restaurer en conservant les types attendus
             self.captured_odds = self._to_defaultdict(
@@ -719,10 +743,15 @@ class MultiSitesOddsTrackerFinal:
             # closed_sites et early_closed: sets par valeur
             loaded_closed = data.get("closed_sites") or {}
             loaded_early = data.get("early_closed") or {}
-            self.closed_sites = defaultdict(
-                set, {int(k): set(v) for k, v in loaded_closed.items()})
-            self.early_closed = defaultdict(
-                set, {int(k): set(v) for k, v in loaded_early.items()})
+            try:
+                self.closed_sites = defaultdict(
+                    set, {int(k): set(v) for k, v in loaded_closed.items()})
+                self.early_closed = defaultdict(
+                    set, {int(k): set(v) for k, v in loaded_early.items()})
+            except (ValueError, TypeError) as e:
+                print(f"⚠️ Erreur conversion clés closed_sites/early_closed: {e}")
+                self.closed_sites = defaultdict(set)
+                self.early_closed = defaultdict(set)
 
             self.matches_info_archive = data.get("matches_info_archive") or {}
             self.completed_matches = set(data.get("completed_matches") or [])
@@ -786,6 +815,38 @@ class MultiSitesOddsTrackerFinal:
 
         except Exception as e:
             return True
+
+    def _cleanup_old_matches(self):
+        """Remove matches that finished more than 5 hours ago to prevent memory leak"""
+        # Threshold for cleanup (in minutes)
+        CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES = 300
+        
+        now = now_mauritius()
+        to_remove = []
+        
+        for eid in list(self.matches_info_archive.keys()):
+            match_info = self.matches_info_archive.get(eid)
+            if not match_info:
+                continue
+                
+            first_match = list(match_info.values())[0]
+            start_time = first_match.get("start_time", "")
+            time_diff = self._get_time_until_match(start_time)
+            
+            # Remove if match finished > 5 hours ago (time_diff < -300 minutes)
+            if time_diff is not None and time_diff < -CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES:
+                to_remove.append(eid)
+        
+        for eid in to_remove:
+            if eid in self.matches_info_archive:
+                del self.matches_info_archive[eid]
+            if eid in self.captured_odds:
+                del self.captured_odds[eid]
+            if eid in self.closed_sites:
+                del self.closed_sites[eid]
+        
+        if to_remove:
+            print(f"   🧹 Cleaned up {len(to_remove)} old matches from memory")
 
     def _odds_have_changed(self, old_odds: dict, new_odds: dict) -> bool:
         """Détecter si les cotes ont changé"""
@@ -861,7 +922,10 @@ class MultiSitesOddsTrackerFinal:
                 return None
 
             except Exception as e:
-                last_error = f"{type(e).__name__}"
+                error_msg = f"{type(e).__name__}: {str(e)[:self.ERROR_MESSAGE_MAX_LENGTH]}"
+                last_error = error_msg
+                if site_name:
+                    print(f"      ⚠️ Fetch error ({site_name}): {error_msg}")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(min(2 ** attempt, 5))
                     continue
@@ -949,10 +1013,11 @@ class MultiSitesOddsTrackerFinal:
                     matching_matches = [
                         m for m in all_matches if m["external_id"] != external_id]
 
+                    # Limit to prevent sheet overload
                     matching_matches_sorted = sorted(
                         matching_matches,
                         key=lambda m: self._get_time_until_match(m["start_time"]) or 9999
-                    ) if matching_matches else []
+                    )[:self.MAX_MATCHING_MATCHES] if matching_matches else []
 
                     # ✅ CRÉER UNE COLONNE PAR MATCH
                     row = {
@@ -1033,7 +1098,8 @@ class MultiSitesOddsTrackerFinal:
                     continue
                 # Dernière connue dans le cache RAM
                 old_odds = self.daily_combinaison_cache.get(external_id, {}).get(site_key)
-                if old_odds != odds_1x2:
+                # Only log change if we had previous odds (not None)
+                if old_odds is not None and old_odds != odds_1x2:
                     # LOG le changement !
                     print(f"🔄 CHANGEMENT {external_id} ({SITES[site_key]['name']}) : "
                         f"{match_info.get('match_name','')[:60]}\n    {old_odds}  ->  {odds_1x2}")
@@ -1045,10 +1111,10 @@ class MultiSitesOddsTrackerFinal:
                         "match_name": match_info.get("match_name", ""),
                         "site_key": site_key
                     }
-                    # MAJ du cache en RAM
-                    if external_id not in self.daily_combinaison_cache:
-                        self.daily_combinaison_cache[external_id] = {}
-                    self.daily_combinaison_cache[external_id][site_key] = odds_1x2
+                # MAJ du cache en RAM (always update cache, even for first capture)
+                if external_id not in self.daily_combinaison_cache:
+                    self.daily_combinaison_cache[external_id] = {}
+                self.daily_combinaison_cache[external_id][site_key] = odds_1x2
 
         if not changes_by_match:
             print("✅ Aucun changement de cotes détecté (aucune feuille DailyCombinaison modifiée)")
@@ -1188,10 +1254,13 @@ class MultiSitesOddsTrackerFinal:
             match_id = int(parts[0])
             competition_id = int(parts[1])
             external_id_str = parts[28]
-            if not external_id_str or not external_id_str.isdigit():
+            if not external_id_str or not external_id_str.strip():
                 return None
-            external_id = int(external_id_str)
-            if external_id == 0:
+            try:
+                external_id = int(external_id_str)
+                if external_id == 0:
+                    return None
+            except ValueError:
                 return None
 
             # Compléter le nom de compétition à partir du mapping 'competitions'
@@ -1768,7 +1837,7 @@ class MultiSitesOddsTrackerFinal:
                     if external_id in self.finalizing_in_progress or external_id in self.finalization_queue:
                         continue
 
-                    self.finalization_queue.add_match(external_id, priority)
+                    await self.finalization_queue.add_match(external_id, priority)
 
     async def finalize_multiple_matches_batch(self, external_ids: List[int]):
         """Finaliser plusieurs matchs + gestion matchs sans cotes"""
@@ -1974,7 +2043,7 @@ class MultiSitesOddsTrackerFinal:
 
         while True:
             try:
-                batch = self.finalization_queue.get_next_batch()
+                batch = await self.finalization_queue.get_next_batch()
 
                 if batch:
                     print(f"\n{'='*70}")
@@ -2092,7 +2161,7 @@ class MultiSitesOddsTrackerFinal:
                         print(
                             f"         ✅ {SITES[site_key]['name']}: Cotes trouvées !")
                         del self.matches_without_odds_retry[external_id]
-                        self.finalization_queue.add_match(
+                        await self.finalization_queue.add_match(
                             external_id, "urgent")
                         self.save_cache_to_disk()
                         break
@@ -2310,8 +2379,8 @@ class MultiSitesOddsTrackerFinal:
             draw_odd = float(draw_odd_str)
             away_odd = float(away_odd_str)
 
-            # Vérifier validité
-            if home_odd == 0 or draw_odd == 0 or away_odd == 0:
+            # Validate odds are in reasonable range (1.0 to 1000.0)
+            if not all(1.0 <= odd <= 1000.0 for odd in [home_odd, draw_odd, away_odd]):
                 return None
 
             # Format identique à _extract_1x2_full_time
@@ -2957,11 +3026,11 @@ class MultiSitesOddsTrackerFinal:
 
                 self._check_date_change()
 
-                # Toutes les 5 minutes environ, selon ton interval_seconds. Exemple: interval_seconds=120, alors modulo 3 ≈ 6 minutes
-                if self.iteration % 3 == 0:
+                # Poll for odds changes
+                if self.iteration % self.DAILY_COMBO_UPDATE_INTERVAL == 0:
                     await self.poll_all_sites_and_detect_odds_changes()
 
-                should_full_getsport = (self.iteration % 5 == 1)
+                should_full_getsport = (self.iteration % self.FULL_GETSPORT_INTERVAL == 1)
 
                 if should_full_getsport:
                     print(f"\n📡 GetSport COMPLET (pagination parallèle)")
@@ -2992,12 +3061,12 @@ class MultiSitesOddsTrackerFinal:
 
                 await self.verify_close_matches_availability()
 
-                # Retry matchs sans cotes toutes les 2 itérations
-                if self.iteration % 2 == 0:
+                # Retry matches without odds
+                if self.iteration % self.RETRY_WITHOUT_ODDS_INTERVAL == 0:
                     await self.retry_matches_without_odds()
 
-                # NOUVEAU : Mise à jour DailyCombinaison (toutes les 3 itérations = 6 min)
-                if self.iteration > 1 and self.iteration % 3 == 0 and DAILY_COMBINAISON_ENABLED:
+                # Update DailyCombinaison sheets
+                if self.iteration > 1 and self.iteration % self.DAILY_COMBO_UPDATE_INTERVAL == 0 and DAILY_COMBINAISON_ENABLED:
                     await self.update_daily_combinaison_sheets()
 
                 await self.check_matches_for_finalization()
@@ -3009,12 +3078,16 @@ class MultiSitesOddsTrackerFinal:
                 print(
                     f"   💾 Cotes en cache : {sum(len(sites) for sites in self.captured_odds.values())} sites")
 
-                # Rapport santé toutes les 5 itérations
-                if self.iteration % 5 == 0:
+                # Health report
+                if self.iteration % self.HEALTH_REPORT_INTERVAL == 0:
                     self.api_health.print_report()
 
                 # Reset stats si nécessaire
                 self.api_health.reset_if_needed()
+
+                # Cleanup old matches to prevent memory leak
+                if self.iteration % self.CLEANUP_INTERVAL == 0:
+                    self._cleanup_old_matches()
 
                 # Sauvegarde périodique de l'état
                 self.save_cache_to_disk()
