@@ -533,7 +533,7 @@ class GoogleSheetsManager:
 
                     # PAUSE ADAPTATIVE - only if quota is getting high
                     if feuilles_traitees % 5 == 0:
-                        if self.api_call_count >= 40:  # Only pause if quota high
+                        if self.api_call_count >= self.API_QUOTA_HIGH_THRESHOLD:
                             print(
                                 f"         ⏸️  Pause quota ({feuilles_traitees}/32 feuilles)...")
                             await asyncio.sleep(15)
@@ -608,6 +608,13 @@ class MultiSitesOddsTrackerFinal:
     RETRY_WITHOUT_ODDS_INTERVAL = 2
     HEALTH_REPORT_INTERVAL = 5
     CLEANUP_INTERVAL = 10
+    
+    # API and error handling
+    API_QUOTA_HIGH_THRESHOLD = 40
+    ERROR_MESSAGE_MAX_LENGTH = 100
+    
+    # Limits
+    MAX_MATCHING_MATCHES = 100  # Prevent sheet overload
 
     def __init__(self, output_dir="multi_sites_odds"):
         self.output_dir = Path(output_dir)
@@ -811,13 +818,13 @@ class MultiSitesOddsTrackerFinal:
 
     def _cleanup_old_matches(self):
         """Remove matches that finished more than 5 hours ago to prevent memory leak"""
+        # Threshold for cleanup (in minutes)
+        CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES = 300
+        
         now = now_mauritius()
         to_remove = []
         
         for eid in list(self.matches_info_archive.keys()):
-            if eid in self.completed_matches:
-                continue
-                
             match_info = self.matches_info_archive.get(eid)
             if not match_info:
                 continue
@@ -827,7 +834,7 @@ class MultiSitesOddsTrackerFinal:
             time_diff = self._get_time_until_match(start_time)
             
             # Remove if match finished > 5 hours ago (time_diff < -300 minutes)
-            if time_diff is not None and time_diff < -300:
+            if time_diff is not None and time_diff < -CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES:
                 to_remove.append(eid)
         
         for eid in to_remove:
@@ -915,7 +922,7 @@ class MultiSitesOddsTrackerFinal:
                 return None
 
             except Exception as e:
-                error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+                error_msg = f"{type(e).__name__}: {str(e)[:self.ERROR_MESSAGE_MAX_LENGTH]}"
                 last_error = error_msg
                 if site_name:
                     print(f"      ⚠️ Fetch error ({site_name}): {error_msg}")
@@ -1006,12 +1013,11 @@ class MultiSitesOddsTrackerFinal:
                     matching_matches = [
                         m for m in all_matches if m["external_id"] != external_id]
 
-                    # Limit to prevent sheet overload (max 100 columns)
-                    MAX_MATCHING_MATCHES = 100
+                    # Limit to prevent sheet overload
                     matching_matches_sorted = sorted(
                         matching_matches,
                         key=lambda m: self._get_time_until_match(m["start_time"]) or 9999
-                    )[:MAX_MATCHING_MATCHES] if matching_matches else []
+                    )[:self.MAX_MATCHING_MATCHES] if matching_matches else []
 
                     # ✅ CRÉER UNE COLONNE PAR MATCH
                     row = {
@@ -1254,7 +1260,7 @@ class MultiSitesOddsTrackerFinal:
                 external_id = int(external_id_str)
                 if external_id == 0:
                     return None
-            except (ValueError, IndexError):
+            except ValueError:
                 return None
 
             # Compléter le nom de compétition à partir du mapping 'competitions'
