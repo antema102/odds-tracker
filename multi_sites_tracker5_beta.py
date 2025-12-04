@@ -736,10 +736,15 @@ class MultiSitesOddsTrackerFinal:
             # closed_sites et early_closed: sets par valeur
             loaded_closed = data.get("closed_sites") or {}
             loaded_early = data.get("early_closed") or {}
-            self.closed_sites = defaultdict(
-                set, {int(k): set(v) for k, v in loaded_closed.items()})
-            self.early_closed = defaultdict(
-                set, {int(k): set(v) for k, v in loaded_early.items()})
+            try:
+                self.closed_sites = defaultdict(
+                    set, {int(k): set(v) for k, v in loaded_closed.items()})
+                self.early_closed = defaultdict(
+                    set, {int(k): set(v) for k, v in loaded_early.items()})
+            except (ValueError, TypeError) as e:
+                print(f"⚠️ Erreur conversion clés closed_sites/early_closed: {e}")
+                self.closed_sites = defaultdict(set)
+                self.early_closed = defaultdict(set)
 
             self.matches_info_archive = data.get("matches_info_archive") or {}
             self.completed_matches = set(data.get("completed_matches") or [])
@@ -2370,10 +2375,6 @@ class MultiSitesOddsTrackerFinal:
 
             # Validate odds are in reasonable range (1.0 to 1000.0)
             if not all(1.0 <= odd <= 1000.0 for odd in [home_odd, draw_odd, away_odd]):
-                return None
-            
-            # Check for zero or negative odds
-            if home_odd <= 0 or draw_odd <= 0 or away_odd <= 0:
                 return None
 
             # Format identique à _extract_1x2_full_time
