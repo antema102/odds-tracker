@@ -153,7 +153,7 @@ class MatchFinalizationQueue:
 
         # Anti-doublon dans la file
         self.queued_ids: Set[int] = set()
-        
+
         # Thread-safety lock for concurrent access
         self._lock = asyncio.Lock()
 
@@ -182,7 +182,8 @@ class MatchFinalizationQueue:
                 return []
 
             if self.last_batch_time:
-                elapsed = (now_mauritius() - self.last_batch_time).total_seconds()
+                elapsed = (now_mauritius() -
+                           self.last_batch_time).total_seconds()
                 if elapsed < self.min_interval_seconds:
                     return []
 
@@ -318,7 +319,7 @@ class GoogleSheetsManager:
     """Gestionnaire Google Sheets OPTIMISÉ avec append au lieu de batch_update"""
     API_QUOTA_HIGH_THRESHOLD = 40
     API_QUOTA_CRITICAL_THRESHOLD = 50
-    
+
     def __init__(self, credentials_file: str, sheet_name: str):
         self.credentials_file = credentials_file
         self.sheet_name = sheet_name
@@ -603,24 +604,26 @@ class GoogleSheetsManager:
 
 class MultiSitesOddsTrackerFinal:
     """Tracker FINAL avec externalId + Capture dynamique + append + fix boucle infinie"""
-    
+
     # Iteration intervals
     FULL_GETSPORT_INTERVAL = 5
     DAILY_COMBO_UPDATE_INTERVAL = 3
     RETRY_WITHOUT_ODDS_INTERVAL = 2
     HEALTH_REPORT_INTERVAL = 5
     CLEANUP_INTERVAL = 10
-    
+
     # API and error handling
     API_QUOTA_HIGH_THRESHOLD = 40
     ERROR_MESSAGE_MAX_LENGTH = 100
-    
+
     # Limits
     MAX_MATCHING_MATCHES = 100  # Prevent sheet overload
 
     def __init__(self, output_dir="multi_sites_odds"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+
+        self.match_results_cache = {}
 
         (self.output_dir / "comparison").mkdir(exist_ok=True)
 
@@ -637,6 +640,9 @@ class MultiSitesOddsTrackerFinal:
         self.early_closed: Dict[int, Set[str]] = defaultdict(set)
         self.current_date = now_mauritius_date_str()
         self.last_getsport_full = None
+
+        # ✅ NOUVEAU : Timestamp vérification résultats
+        self.last_result_check = None
 
         self.finalization_queue = MatchFinalizationQueue(
             batch_size=20,
@@ -662,7 +668,8 @@ class MultiSitesOddsTrackerFinal:
         # Persistence état/cache
         self.state_file = self.output_dir / "tracker_state.pkl"
         self._last_cache_save = 0.0
-        self.cache_save_min_interval = 30  # secondes (anti-spam disque)
+        self. cache_save_min_interval = 30  # secondes (anti-spam disque)
+        self._disable_auto_save = False
 
         # Anti double-finalisation
         self.finalizing_in_progress: Set[int] = set()
@@ -697,6 +704,9 @@ class MultiSitesOddsTrackerFinal:
     def save_cache_to_disk(self, force: bool = False):
         """Sauvegarde l'état RAM sur disque (JSON) avec anti-spam."""
         try:
+            if self._disable_auto_save and not force:
+                return
+
             now = time.time()
             if not force and (now - self._last_cache_save) < self.cache_save_min_interval:
                 return
@@ -717,7 +727,8 @@ class MultiSitesOddsTrackerFinal:
             }
             json_file = self.state_file.with_suffix('.json')
             with open(json_file, 'w') as f:
-                json.dump(data, f, indent=2, default=str)  # default=str for datetime
+                # default=str for datetime
+                json.dump(data, f, indent=2, default=str)
             self._last_cache_save = now
             print(f"💾 État sauvegardé ({json_file.name})")
         except Exception as e:
@@ -751,7 +762,8 @@ class MultiSitesOddsTrackerFinal:
                 self.early_closed = defaultdict(
                     set, {int(k): set(v) for k, v in loaded_early.items()})
             except (ValueError, TypeError) as e:
-                print(f"⚠️ Erreur conversion clés closed_sites/early_closed: {e}")
+                print(
+                    f"⚠️ Erreur conversion clés closed_sites/early_closed: {e}")
                 self.closed_sites = defaultdict(set)
                 self.early_closed = defaultdict(set)
 
@@ -822,23 +834,23 @@ class MultiSitesOddsTrackerFinal:
         """Remove matches that finished more than 5 hours ago to prevent memory leak"""
         # Threshold for cleanup (in minutes)
         CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES = 300
-        
+
         now = now_mauritius()
         to_remove = []
-        
+
         for eid in list(self.matches_info_archive.keys()):
             match_info = self.matches_info_archive.get(eid)
             if not match_info:
                 continue
-                
+
             first_match = list(match_info.values())[0]
             start_time = first_match.get("start_time", "")
             time_diff = self._get_time_until_match(start_time)
-            
+
             # Remove if match finished > 5 hours ago (time_diff < -300 minutes)
             if time_diff is not None and time_diff < -CLEANUP_OLD_MATCHES_THRESHOLD_MINUTES:
                 to_remove.append(eid)
-        
+
         for eid in to_remove:
             if eid in self.matches_info_archive:
                 del self.matches_info_archive[eid]
@@ -846,7 +858,7 @@ class MultiSitesOddsTrackerFinal:
                 del self.captured_odds[eid]
             if eid in self.closed_sites:
                 del self.closed_sites[eid]
-        
+
         if to_remove:
             print(f"   🧹 Cleaned up {len(to_remove)} old matches from memory")
 
@@ -937,25 +949,28 @@ class MultiSitesOddsTrackerFinal:
         return None
 
     async def _update_separate_sheets_incremental(self, changed_matches: dict, combinations_index: dict):
-        """Mettre à jour les 4 feuilles (format 1 colonne par match)"""
+        """Mettre à jour les 4 feuilles (format 1 colonne par match) - VERSION CORRIGÉE"""
 
         try:
             # Récupérer noms des matchs modifiés
             changed_match_names = set()
-            for external_id in changed_matches. keys():
+            for external_id in changed_matches.keys():
                 match_info = self.matches_info_archive.get(external_id, {})
                 if match_info:
                     first_info = list(match_info.values())[0]
-                    changed_match_names.add(first_info.get("match_name", ""))
+                    changed_match_names.add(first_info. get("match_name", ""))
+
+            print(
+                f"   🔄 {len(changed_match_names)} match(s) modifié(s) à mettre à jour")
 
             # Pour chaque site
-            for site_key in SITES.keys():
+            for site_key in SITES. keys():
                 site_name = SITES[site_key]["name"]
                 sheet_name = f"DailyCombinaison_{site_name}"
 
                 print(f"   📝 {sheet_name}...")
 
-                worksheet = self.gsheets.get_or_create_worksheet(sheet_name)
+                worksheet = self.gsheets. get_or_create_worksheet(sheet_name)
                 if not worksheet:
                     continue
 
@@ -976,19 +991,17 @@ class MultiSitesOddsTrackerFinal:
                 except ValueError:
                     col_match = 1
 
-                # Supprimer lignes obsolètes
-                rows_to_keep = [all_values[0]]
-
+                # ✅ NOUVEAU : Créer un dictionnaire des lignes existantes
+                existing_rows = {}
                 for row in all_values[1:]:
                     if len(row) > col_match:
                         match_name = row[col_match]
-                        if match_name not in changed_match_names:
-                            rows_to_keep. append(row)
+                        existing_rows[match_name] = row
 
-                deleted_count = len(all_values) - len(rows_to_keep)
+                print(f"      📊 {len(existing_rows)} ligne(s) existante(s)")
 
-                # Générer nouvelles lignes
-                new_data = []
+                # ✅ NOUVEAU : Mettre à jour SEULEMENT les matchs modifiés
+                updated_count = 0
 
                 for external_id in changed_matches.keys():
                     match_info = self.matches_info_archive.get(external_id, {})
@@ -1010,19 +1023,21 @@ class MultiSitesOddsTrackerFinal:
                     odds_string = sites_odds[site_key]
                     odds_key = odds_string.replace(" ", "")
 
-                    all_matches = combinations_index[site_key].get(
+                    all_matches = combinations_index[site_key]. get(
                         odds_key, [])
                     matching_matches = [
-                        m for m in all_matches if m["external_id"] != external_id]
+                        m for m in all_matches if m.get("external_id") != external_id
+                    ]
 
-                    # Limit to prevent sheet overload
+                    # Trier et limiter
                     matching_matches_sorted = sorted(
                         matching_matches,
-                        key=lambda m: self._get_time_until_match(m["start_time"]) or 9999
+                        key=lambda m: self._get_time_until_match(
+                            m["start_time"]) or 9999
                     )[:self.MAX_MATCHING_MATCHES] if matching_matches else []
 
-                    # ✅ CRÉER UNE COLONNE PAR MATCH
-                    row = {
+                    # Créer la nouvelle ligne
+                    new_row = {
                         "Date": now_mauritius_str("%Y-%m-%d"),
                         "Match Principal": match_principal,
                         "Compétition": competition_principal,
@@ -1030,29 +1045,56 @@ class MultiSitesOddsTrackerFinal:
                         "Cotes 1X2": odds_string,
                     }
 
+                    # Ajouter matchs similaires avec résultats
                     for i, match in enumerate(matching_matches_sorted, start=1):
-                        row[f"Match {i}"] = f"{match['match_name']} ({match['competition']})"
-                        row[f"Heure {i}"] = match['start_time']
+                        match_name = match. get('match_name', '')
+                        competition = match.get('competition', '')
 
-                    row["Nombre Total"] = len(matching_matches_sorted)
+                        # Récupérer résultat du match similaire
+                        match_result = ""
+                        similar_external_id = match.get("external_id")
 
-                    new_data.append(row)
+                        if similar_external_id and similar_external_id != 0:
+                            similar_match_info = self.matches_info_archive.get(
+                                similar_external_id, {})
 
-                # Réécrire la feuille
-                if new_data or deleted_count > 0:
+                            if similar_match_info and site_key in similar_match_info:
+                                similar_match_id = similar_match_info[site_key]. get(
+                                    "match_id")
+
+                                if site_key in self.match_results_cache:
+                                    if similar_match_id in self.match_results_cache[site_key]:
+                                        result_data = self.match_results_cache[site_key][similar_match_id]
+                                        ft = result_data.get("fullTime", "")
+
+                                        if ft and ft not in ["", "C", None]:
+                                            match_result = f" [{ft}]"
+
+                        new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
+                        new_row[f"Heure {i}"] = match.get('start_time', '')
+
+                    new_row["Nombre Total"] = len(matching_matches_sorted)
+
+                    # ✅ Remplacer ou ajouter la ligne dans le dictionnaire
+                    existing_rows[match_principal] = [
+                        new_row. get(col, "") for col in header]
+                    updated_count += 1
+
+                # ✅ NOUVEAU : Réécrire TOUTE la feuille avec lignes existantes + mises à jour
+                if updated_count > 0:
+                    # Convertir dictionnaire en liste
+                    all_data = [header]
+                    for row_values in existing_rows.values():
+                        all_data.append(row_values)
+
+                    # Effacer et réécrire
                     def clear_sheet():
                         return worksheet.clear()
 
                     self.gsheets._execute_with_retry(clear_sheet)
                     await asyncio.sleep(2)
 
-                    all_data = rows_to_keep. copy()
-
-                    for detail in new_data:
-                        row_values = [detail.get(col, "") for col in header]
-                        all_data.append(row_values)
-
-                    # Réécrire
+                    # Réécrire par batch
                     batch_size = 500
                     for i in range(0, len(all_data), batch_size):
                         batch = all_data[i:i+batch_size]
@@ -1065,9 +1107,10 @@ class MultiSitesOddsTrackerFinal:
                         if i + batch_size < len(all_data):
                             await asyncio.sleep(3)
 
-                    print(f"      ✅ Mis à jour ({len(all_data)-1} lignes)")
+                    print(
+                        f"      ✅ Mis à jour ({len(all_data)-1} lignes, {updated_count} modifiée(s))")
                 else:
-                    print(f"      ➡️  Aucun changement")
+                    print(f"      ➡️  Aucun changement pour ce site")
 
             print(f"   ✅ 4 feuilles mises à jour")
 
@@ -1099,12 +1142,13 @@ class MultiSitesOddsTrackerFinal:
                 if not odds_1x2:
                     continue
                 # Dernière connue dans le cache RAM
-                old_odds = self.daily_combinaison_cache.get(external_id, {}).get(site_key)
+                old_odds = self.daily_combinaison_cache.get(
+                    external_id, {}).get(site_key)
                 # Only log change if we had previous odds (not None)
                 if old_odds is not None and old_odds != odds_1x2:
                     # LOG le changement !
                     print(f"🔄 CHANGEMENT {external_id} ({SITES[site_key]['name']}) : "
-                        f"{match_info.get('match_name','')[:60]}\n    {old_odds}  ->  {odds_1x2}")
+                          f"{match_info.get('match_name', '')[:60]}\n    {old_odds}  ->  {odds_1x2}")
                     if external_id not in changes_by_match:
                         changes_by_match[external_id] = {}
                     changes_by_match[external_id][site_key] = {
@@ -1119,31 +1163,31 @@ class MultiSitesOddsTrackerFinal:
                 self.daily_combinaison_cache[external_id][site_key] = odds_1x2
 
         if not changes_by_match:
-            print("✅ Aucun changement de cotes détecté (aucune feuille DailyCombinaison modifiée)")
+            print(
+                "✅ Aucun changement de cotes détecté (aucune feuille DailyCombinaison modifiée)")
             return
 
-        print(f"🔄 {sum(len(v) for v in changes_by_match.values())} changement(s) détecté(s), MAJ incrémentale...")
+        print(
+            f"🔄 {sum(len(v) for v in changes_by_match.values())} changement(s) détecté(s), MAJ incrémentale...")
         # 3. Re-bâtir l'index combos avec le nouveau cache RAM
-        combinations_index = self._build_combinations_index(self.daily_combinaison_cache)
+        combinations_index = self._build_combinations_index(
+            self.daily_combinaison_cache)
         # 4. Mise à jour incrémentale des feuilles concernées UNIQUEMENT
         await self._update_separate_sheets_incremental(changes_by_match, combinations_index)
         print("✅ Mise à jour incrémentale terminée.")
 
     async def _create_separate_sheets(self, odds_1x2_by_match: dict, combinations_index: dict):
-        """Créer 4 feuilles séparées (1 colonne par match identique) - CORRECTION compétition"""
+        """Créer 4 feuilles séparées (1 colonne par match identique) - CORRECTION header dynamique"""
 
-        # On reconstitue le mapping competitions à partir des combosIndex
-        # (prend le mapping du premier site avec data, tu peux le rendre + robuste selon ton usage)
+        # On reconstitue le mapping des compétitions à partir des combosIndex
         competitions = {}
         for site_key in SITES.keys():
-            # On va chercher la première entrée valides
             for match_list in combinations_index[site_key].values():
                 for m in match_list:
                     cid = m.get("competition_id")
                     cname = m.get("competition")
                     if cid and cname and cid not in competitions:
                         competitions[cid] = {"name": cname}
-        # Ou Si tu as déjà self.competitions, alors : competitions = self.competitions
 
         # Préparer les données par site
         sheets_data = {
@@ -1168,7 +1212,7 @@ class MultiSitesOddsTrackerFinal:
             competition_principal = first_info.get("competition_name", "")
             heure_principal = first_info.get("start_time", "")
 
-            # ⭐ CORRECTION ici : complète le nom de compétition si manquant
+            # Complète le nom de compétition si manquant
             if (not competition_principal or competition_principal == "") and competition_id:
                 comp_info = competitions.get(competition_id)
                 if comp_info:
@@ -1187,17 +1231,17 @@ class MultiSitesOddsTrackerFinal:
                 all_matches = combinations_index[site_key].get(odds_key, [])
                 matching_matches = [m for m in all_matches if m.get("external_id") != external_id]
 
-                match_has_combos = True
-                total_combinations += len(matching_matches)
+                if matching_matches:
+                    match_has_combos = True
+                    total_combinations += len(matching_matches)
 
-                # Trier par heure
+                # Trier par heure et limiter au maximum défini
                 matching_matches_sorted = sorted(
                     matching_matches,
-                    key=lambda m: self._get_time_until_match(
-                        m["start_time"]) or 9999
-                )
+                    key=lambda m: self._get_time_until_match(m["start_time"]) or 9999
+                )[:self.MAX_MATCHING_MATCHES]
 
-                # ⭐ la colonne "Compétition" est toujours correctement remplie !
+                # Créer la ligne de base
                 row = {
                     "Date": now_mauritius_str("%Y-%m-%d"),
                     "Match Principal": match_principal,
@@ -1206,24 +1250,59 @@ class MultiSitesOddsTrackerFinal:
                     "Cotes 1X2": odds_string,
                 }
 
-                # Ajouter chaque match dans sa colonne
+                # Ajouter chaque match similaire dans sa colonne
                 for i, match in enumerate(matching_matches_sorted, start=1):
-                    row[f"Match {i}"] = f"{match.get('match_name', '')} ({match.get('competition', '')})"
+                    match_name = match. get('match_name', '')
+                    competition = match.get('competition', '')
+
+                    # Récupérer le résultat du MATCH SIMILAIRE
+                    match_result = ""
+                    similar_external_id = match.get("external_id")
+
+                    # Si ce n'est pas un match historique (external_id != 0)
+                    if similar_external_id and similar_external_id != 0:
+                        similar_match_info = self.matches_info_archive.get(similar_external_id, {})
+
+                        if similar_match_info and site_key in similar_match_info:
+                            similar_match_id = similar_match_info[site_key].get("match_id")
+
+                            # Chercher dans le cache de résultats
+                            if site_key in self.match_results_cache:
+                                if similar_match_id in self.match_results_cache[site_key]:
+                                    result_data = self.match_results_cache[site_key][similar_match_id]
+                                    ft = result_data.get("fullTime", "")
+
+                                    if ft and ft not in ["", "C", None]:
+                                        match_result = f" [{ft}]"
+
+                    # Ajouter le résultat au nom du match
+                    row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
                     row[f"Heure {i}"] = match.get('start_time', '')
 
                 row["Nombre Total"] = len(matching_matches_sorted)
                 sheets_data[sheet_name].append(row)
 
             if match_has_combos:
-                match_has_combos = True
-                total_combinations += len(matching_matches)
+                matches_with_combos += 1
 
         # Sauvegarder stats
         self.daily_combo_total_matches = len(odds_1x2_by_match)
         self.daily_combo_matches_with_combos = matches_with_combos
         self.daily_combo_total_combinations = total_combinations
 
-        # Envoyer chaque feuille
+        # ✅ NOUVEAU : Calculer le nombre MAX de matchs similaires pour créer le header dynamique
+        max_matches_per_row = 0
+        for sheet_name, rows in sheets_data.items():
+            for row in rows:
+                # Compter combien de colonnes "Match X" existent
+                match_columns = [k for k in row.keys() if k.startswith("Match ")]
+                if len(match_columns) > max_matches_per_row:
+                    max_matches_per_row = len(match_columns)
+
+        if max_matches_per_row > 0:
+            print(f"   📊 Maximum {max_matches_per_row} matchs similaires par ligne")
+
+        # Envoyer chaque feuille AVEC HEADER DYNAMIQUE
         for sheet_name, rows in sheets_data.items():
             if not rows:
                 print(f"   ⚠️  {sheet_name} : Aucune combinaison")
@@ -1231,13 +1310,31 @@ class MultiSitesOddsTrackerFinal:
 
             print(f"   📤 {sheet_name} : {len(rows)} ligne(s)...")
 
+            # ✅ NOUVEAU : Créer le header dynamique
+            base_header = ["Date", "Match Principal", "Compétition", "Heure Match", "Cotes 1X2"]
+            
+            # Ajouter colonnes pour matchs similaires
+            for i in range(1, max_matches_per_row + 1):
+                base_header.append(f"Match {i}")
+                base_header.append(f"Heure {i}")
+            
+            base_header.append("Nombre Total")
+
+            # ✅ NOUVEAU : Garantir que TOUTES les lignes ont TOUTES les colonnes du header
+            normalized_rows = []
+            for row in rows:
+                normalized_row = {}
+                for col in base_header:
+                    normalized_row[col] = row.get(col, "")  # Remplir avec "" si absent
+                normalized_rows.append(normalized_row)
+
             # Envoyer par batch
             batch_size = 500
-            for i in range(0, len(rows), batch_size):
-                batch = rows[i:i+batch_size]
+            for i in range(0, len(normalized_rows), batch_size):
+                batch = normalized_rows[i:i+batch_size]
                 await self.gsheets.append_rows_batch({sheet_name: batch})
 
-                if i + batch_size < len(rows):
+                if i + batch_size < len(normalized_rows):
                     await asyncio.sleep(5)
 
             print(f"      ✅ {sheet_name} : Envoyé")
@@ -1302,7 +1399,7 @@ class MultiSitesOddsTrackerFinal:
             "periodCode": "today"
         }
         return await self.fetch(url, params, SITES[site_key]["name"])
-    
+
     async def get_all_matches_for_site_date(self, site_key: str, date: str) -> Dict[int, dict]:
         """Récupérer TOUS les matchs d'un site pour une date avec pagination parallèle,
         avec un mapping global des compétitions
@@ -1365,7 +1462,8 @@ class MultiSitesOddsTrackerFinal:
                 for match_str in match_data.split("|"):
                     if not match_str.strip():
                         continue
-                    match_info = self._parse_getsport_match_data(match_str, competitions)
+                    match_info = self._parse_getsport_match_data(
+                        match_str, competitions)
                     if match_info:
                         match_info["site"] = site_key
                         all_matches[match_info["external_id"]] = match_info
@@ -1938,8 +2036,9 @@ class MultiSitesOddsTrackerFinal:
     # PATCH: Ajout colonne résultat par marché dans Google Sheets
 
     # ⏩ Modifie ta méthode _prepare_sheets_data pour ajouter le score correspondant au marché sur chaque onglet
-    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[Dict]]:
-        # ... code avant ...
+    def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[List]]:
+        """Préparer données pour Google Sheets AVEC colonnes matchID et résultats -- alignement strict!"""
+
         first_match = list(matches_info.values())[0]
 
         competition_name = first_match.get("competition_name", "")
@@ -1968,34 +2067,254 @@ class MultiSitesOddsTrackerFinal:
             sheet_name = MARKET_SHEET_MAPPING.get(market_key, market_key[:31])
             row = base_data.copy()
 
-            # Ajoute colonne résultat sur le bon onglet
+            # Colonnes résultat par type de marché
             if sheet_name == "1X2_FullTime":
                 row["Résultat_FullTime"] = ""
             elif sheet_name == "1X2_HalfTime":
                 row["Résultat_HalfTime"] = ""
             elif sheet_name == "1X2_2ndHalf":
                 row["Résultat_SecondHalf"] = ""
+            elif "OverUnder" in sheet_name and "FT" in sheet_name:
+                row["Résultat_FullTime"] = ""
+            elif "OverUnder" in sheet_name and "HT" in sheet_name:
+                row["Résultat_HalfTime"] = ""
 
-            # Tu peux ajouter ici les matchIDs cachés si besoin...
-
+            # Colonnes cotes + matchID (pour TOUS les sites)
             for site_key in SITES.keys():
                 site_name = SITES[site_key]["name"]
+
                 if site_key in self.captured_odds[external_id]:
                     markets = self.captured_odds[external_id][site_key].get("markets", {})
                     if market_key in markets:
-                        odds_str = self._format_odds_for_display(markets[market_key].get("odds", {}))
+                        odds_str = self._format_odds_for_display(
+                            markets[market_key].get("odds", {}))
                         row[site_name] = odds_str
                     else:
                         row[site_name] = ""
                 else:
                     row[site_name] = ""
 
+                # Colonne matchID spécifique au site
+                match_info = matches_info.get(site_key)
+                if match_info:
+                    row[f"matchID_{site_name}"] = match_info.get("match_id", "")
+                else:
+                    row[f"matchID_{site_name}"] = ""
+
+            # ==== RIGUEUR DANS L'ORDRE ====
+            # HEADER STRICT (ordre figé pour chaque ligne):
+            header = [
+                "Date", "Heure", "External ID", "Match", "Compétition", "Heure Match",
+                "StevenHills", "SuperScore", "ToteLePEP", "PlayOnline",
+                "matchID_StevenHills", "matchID_SuperScore", "matchID_ToteLePEP", "matchID_PlayOnline",
+            ]
+            # Colonne résultat selon le marché traité
+            if sheet_name == "1X2_FullTime":
+                header.append("Résultat_FullTime")
+            elif sheet_name == "1X2_HalfTime":
+                header.append("Résultat_HalfTime")
+            elif sheet_name == "1X2_2ndHalf":
+                header.append("Résultat_SecondHalf")
+            elif "OverUnder" in sheet_name and "FT" in sheet_name:
+                header.append("Résultat_FullTime")
+            elif "OverUnder" in sheet_name and "HT" in sheet_name:
+                header.append("Résultat_HalfTime")
+            # (ajouter ici d'autres colonnes techniques au besoin)
+
+            # Construction stricte
+            final_row = [row.get(col, "") for col in header]
+
             if sheet_name not in sheets_data:
                 sheets_data[sheet_name] = []
-            sheets_data[sheet_name].append(row)
+            sheets_data[sheet_name].append(final_row)
+
+            # Pour une première row, stocke le header aussi
+            if f"{sheet_name}__header" not in sheets_data:
+                sheets_data[f"{sheet_name}__header"] = header
 
         return sheets_data
 
+
+    async def update_match_results_in_sheets(self):
+        """Vérifier et mettre à jour les résultats (toutes les heures)"""
+
+        print(f"\n{'='*70}")
+        print(f"🏆 VÉRIFICATION RÉSULTATS DES MATCHS")
+        print(f"{'='*70}")
+
+        date_formatted = now_mauritius().strftime("%d/%m/%Y")
+
+        # 1. Récupérer résultats des 4 sites
+        tasks = [
+            self.fetch_match_results(site_key, date_formatted)
+            for site_key in SITES.keys()
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Indexer par site et matchId
+        results_by_site = {}
+
+        for site_key, result in zip(SITES.keys(), results):
+            if isinstance(result, Exception) or not result or not result.get("isSuccess"):
+                results_by_site[site_key] = {}
+                continue
+
+            results_by_site[site_key] = {}
+
+            for country in result.get("transaction", []):
+                for match in country.get("matches", []):
+                    match_id = match.get("matchId")
+                    if match_id:
+                        results_by_site[site_key][match_id] = {
+                            "fullTime": match.get("fullTime", ""),
+                            "halfTime": match.get("halfTime", ""),
+                            "secondHalfTime": match.get("secondHalfTime", "")
+                        }
+
+        total_results = sum(len(r) for r in results_by_site.values())
+        self.match_results_cache = results_by_site
+
+        if total_results == 0:
+            print(f"   ⚠️ Aucun résultat disponible")
+            return
+
+        print(f"   ✅ {total_results} résultats récupérés")
+
+        # 2. Mettre à jour les feuilles
+        sheets_to_update = [
+            ("1X2_FullTime", "FullTime", "fullTime"),
+            ("1X2_HalfTime", "HalfTime", "halfTime"),
+            ("1X2_2ndHalf", "SecondHalf", "secondHalfTime")
+        ]
+
+        total_updates = 0
+
+        for sheet_name, result_suffix, json_key in sheets_to_update:
+            worksheet = self.gsheets.get_or_create_worksheet(sheet_name)
+            if not worksheet:
+                continue
+
+            print(f"\n   📝 {sheet_name}...")
+
+            def get_all():
+                return worksheet.get_all_values()
+
+            all_values = self.gsheets._execute_with_retry(get_all)
+
+            if not all_values or len(all_values) < 2:
+                continue
+
+            header = all_values[0]
+
+            try:
+                col_result = header.index(f"Résultat_{result_suffix}")
+            except ValueError:
+                print(f"      ⚠️ Colonne résultat non trouvée")
+                continue
+
+            # Trouver colonnes matchID
+            matchid_cols = {}
+            for site_key in SITES.keys():
+                site_name = SITES[site_key]["name"]
+                try:
+                    matchid_cols[site_key] = header.index(
+                        f"matchID_{site_name}")
+                except ValueError:
+                    matchid_cols[site_key] = None
+
+            # Parcourir lignes
+            updates_made = 0
+
+            for row_index, row in enumerate(all_values[1:], start=2):
+                if len(row) <= col_result:
+                    continue
+
+                # Si résultat déjà rempli, skip
+                existing_result = row[col_result] if col_result < len(
+                    row) else ""
+                if existing_result and existing_result not in ["", "C"]:
+                    continue
+
+                # Chercher résultat dans les 4 sites
+                result_found = None
+
+                for site_key in SITES.keys():
+                    col_idx = matchid_cols.get(site_key)
+                    if col_idx is None or len(row) <= col_idx:
+                        continue
+
+                    match_id_str = row[col_idx]
+                    if not match_id_str:
+                        continue
+
+                    try:
+                        match_id = int(match_id_str)
+                    except ValueError:
+                        continue
+
+                    # Chercher résultat
+                    if site_key in results_by_site and match_id in results_by_site[site_key]:
+                        result_data = results_by_site[site_key][match_id]
+                        result_found = result_data. get(json_key, "")
+
+                        if result_found and result_found not in ["", "C", None]:
+                            break
+
+                # Mettre à jour si trouvé
+                if result_found and result_found not in ["", "C", None]:
+                    try:
+                        col_letter = chr(65 + col_result)
+
+                        def update_cell():
+                            return worksheet.update(
+                                values=[[result_found]],
+                                range_name=f"{col_letter}{row_index}"
+                            )
+
+                        self.gsheets._execute_with_retry(update_cell)
+                        updates_made += 1
+                        total_updates += 1
+
+                        await asyncio.sleep(1)
+                    except:
+                        continue
+
+            if updates_made > 0:
+                print(f"      ✅ {updates_made} résultat(s) ajouté(s)")
+
+        print(f"\n{'='*70}")
+        print(f"✅ Total: {total_updates} résultat(s) ajouté(s)")
+        print(f"{'='*70}\n")
+
+    async def fetch_match_results(self, site_key: str, date: str) -> Optional[dict]:
+        """
+        Récupérer les résultats via /webapi/searchresult
+
+        Args:
+            site_key: Clé du site (ex: "stevenhills")
+            date: Date format "DD/MM/YYYY"
+
+        Returns:
+            JSON avec résultats des matchs
+        """
+        base_url = SITES[site_key]["base_url"]
+        url = f"{base_url}/webapi/searchresult"
+
+        # POST request
+        headers = HEADERS.copy()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        payload = {"DateFrom": date}
+
+        try:
+            async with self.session.post(url, headers=headers, data=payload, timeout=TIMEOUT) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    return None
+        except:
+            return None
 
     def _write_to_local_excel(self, sheets_data: Dict[str, List[dict]]):
         """Écrire dans Excel local"""
@@ -2087,7 +2406,6 @@ class MultiSitesOddsTrackerFinal:
         await self.clear_daily_combinaison_sheets()
         await self.build_daily_combinaison_sheets()
 
-
     async def _delayed_combo_rebuild(self):
         """
         Reconstruction DIFFÉRÉE des feuilles DailyCombinaison
@@ -2095,32 +2413,34 @@ class MultiSitesOddsTrackerFinal:
         """
         print("⏳ Reconstruction DailyCombinaison dans 5 minutes...")
         await asyncio.sleep(300)  # 5 minutes
-        
+
         print("\n🔄 Début reconstruction DailyCombinaison (nouveau jour)")
-        
+
         # 1. Effacer les anciennes feuilles
         await self.clear_daily_combinaison_sheets()
-        
+
         # 2. Récupérer les matchs du nouveau jour
         print(f"   📡 Récupération matchs du {self.current_date}...")
         all_matches_by_site = await self.get_all_sites_matches(self.current_date)
 
-        total_matches = sum(len(matches) for matches in all_matches_by_site.values())
-        
+        total_matches = sum(len(matches)
+                            for matches in all_matches_by_site.values())
+
         if total_matches == 0:
-            print(f"   ⚠️  Aucun match disponible à {now_mauritius_str('%H:%M')}")
+            print(
+                f"   ⚠️  Aucun match disponible à {now_mauritius_str('%H:%M')}")
             print(f"   ⏰ Nouvelle tentative dans 30 minutes...")
             await asyncio.sleep(1800)  # 30 minutes
             await self._delayed_combo_rebuild()
             return
-        
+
         print(f"   ✅ {total_matches} matchs trouvés pour le {self.current_date}")
-        
+
         # 3.  Construire les feuilles normalement
         await self.build_daily_combinaison_sheets()
-        
-        print(f"   ✅ Feuilles DailyCombinaison reconstruites à {now_mauritius_str('%H:%M')}")
 
+        print(
+            f"   ✅ Feuilles DailyCombinaison reconstruites à {now_mauritius_str('%H:%M')}")
 
     def _check_date_change(self):
         """Vérifier changement de date avec nettoyage COMPLET"""
@@ -2135,9 +2455,12 @@ class MultiSitesOddsTrackerFinal:
 
             # ✅ AJOUT : Log détaillé
             print(f"   🧹 Nettoyage en cours...")
-            print(f"      - Matchs en archive : {len(self.matches_info_archive)}")
-            print(f"      - Cotes capturées : {sum(len(s) for s in self.captured_odds.values())}")
-            print(f"      - Cache combo : {len(self.daily_combinaison_cache)} matchs")
+            print(
+                f"      - Matchs en archive : {len(self.matches_info_archive)}")
+            print(
+                f"      - Cotes capturées : {sum(len(s) for s in self.captured_odds.values())}")
+            print(
+                f"      - Cache combo : {len(self.daily_combinaison_cache)} matchs")
 
             # ✅ Nettoyage COMPLET (matchs + cotes + combo)
             self.matches_by_external_id.clear()
@@ -2157,12 +2480,14 @@ class MultiSitesOddsTrackerFinal:
             print(f"   ✅ Système réinitialisé pour le {current_date}")
 
             # ✅ AJOUT : Réinitialiser l'index des combinaisons
-            self.combinations_index_cache = {site_key: {} for site_key in SITES.keys()}
+            self.combinations_index_cache = {
+                site_key: {} for site_key in SITES.keys()}
             self.combinations_index_cache["last_rebuild"] = None
-            
+
             self.current_date = current_date
 
-            print(f"   🧹 Cache combo vidé : {old_combo_count} matchs du {self.current_date}")
+            print(
+                f"   🧹 Cache combo vidé : {old_combo_count} matchs du {self.current_date}")
             print(f"   ✅ Système réinitialisé pour le {current_date}")
             print(f"{'='*70}\n")
 
@@ -2171,7 +2496,6 @@ class MultiSitesOddsTrackerFinal:
 
             # ✅ MODIFICATION : Attendre avant de reconstruire les feuilles
             asyncio.create_task(self._delayed_combo_rebuild())
-
 
     async def retry_matches_without_odds(self):
         """Retenter la capture des matchs sans cotes"""
@@ -2615,196 +2939,205 @@ class MultiSitesOddsTrackerFinal:
         print(f"📊 CONSTRUCTION DailyCombinaison (VERSION RAPIDE)")
         print(f"{'='*70}")
 
-        # 1. Récupérer tous les matchs du jour
-        print(f"   📡 Récupération matchs du jour ({self.current_date})...")
-        all_matches_by_site = await self.get_all_sites_matches(self.current_date)
+        self._disable_auto_save = True
+        try:
+            # 1. Récupérer tous les matchs du jour
+            print(f"   📡 Récupération matchs du jour ({self.current_date})...")
+            all_matches_by_site = await self.get_all_sites_matches(self.current_date)
 
-        # ✅ AJOUT : Date de référence pour filtrage strict
-        today = now_mauritius().date()
+            # ✅ AJOUT : Date de référence pour filtrage strict
+            today = now_mauritius().date()
 
-        # Fusionner par external_id avec filtrage par date
-        all_matches = {}
-        filtered_out_count = 0  # Compteur pour les matchs filtrés
-        
-        for site_key, matches in all_matches_by_site.items():
-            for external_id, match_info in matches.items():
-                # ✅ AJOUT : Vérifier que le match est bien du jour actuel
-                start_time_str = match_info.get("start_time", "")
-                
-                try:
-                    # Parser la date du match
-                    match_time_str = start_time_str. replace(',', '').strip()
-                    current_year = now_mauritius().year
-                    if str(current_year) not in match_time_str:
-                        match_time_str = f"{match_time_str} {current_year}"
-                    
-                    match_dt = date_parser.parse(match_time_str)
-                    if match_dt.tzinfo is None:
-                        match_dt = match_dt.replace(tzinfo=MAURITIUS_TZ)
-                    
-                    # ✅ FILTRE : Ignorer si pas aujourd'hui
-                    if match_dt.date() != today:
-                        filtered_out_count += 1
-                        continue
-                        
-                except Exception:
-                    # En cas d'erreur de parsing, on skip le match par sécurité
-                    filtered_out_count += 1
-                    continue
-                
-                # Ajouter le match validé
-                if external_id not in all_matches:
-                    all_matches[external_id] = {}
-                all_matches[external_id][site_key] = match_info
+            # Fusionner par external_id avec filtrage par date
+            all_matches = {}
+            filtered_out_count = 0  # Compteur pour les matchs filtrés
 
-                if external_id not in self.matches_info_archive:
-                    self.matches_info_archive[external_id] = {}
-                self.matches_info_archive[external_id][site_key] = match_info
-
-        total_matches = len(all_matches)
-        print(f"   ✅ {total_matches} matchs récupérés (du {self.current_date})")
-        
-        if filtered_out_count > 0:
-            print(f"   🔍 {filtered_out_count} match(s) filtré(s) (autre date)")
-
-        if total_matches == 0:
-            print(f"   ⚠️  Aucun match à analyser")
-            return
-
-        # 2. Parser matchData GetSport
-        print(f"   🔍 Extraction cotes 1X2 depuis GetSport...")
-        odds_1x2_by_match = {}
-        success_count = 0
-
-        for site_key in SITES. keys():
-            site_name = SITES[site_key]["name"]
-
-            page1_data = await self.get_sport_page(site_key, self.current_date, 1, inclusive=1)
-
-            if not page1_data:
-                print(f"      ⚠️  {site_name}: GetSport échoué")
-                continue
-
-            total_pages = page1_data. get("totalPages", 1)
-            all_pages_data = [page1_data]
-
-            if total_pages > 1:
-                tasks = [
-                    self.get_sport_page(
-                        site_key, self. current_date, page_no, inclusive=0)
-                    for page_no in range(2, total_pages + 1)
-                ]
-                other_pages = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for page_data in other_pages:
-                    if isinstance(page_data, Exception) or not page_data:
-                        continue
-                    all_pages_data.append(page_data)
-
-            site_success = 0
-            for page_data in all_pages_data:
-                match_data_str = page_data.get("matchData", "")
-                if not match_data_str:
-                    continue
-
-                for match_str in match_data_str.split("|"):
-                    if not match_str. strip():
-                        continue
+            for site_key, matches in all_matches_by_site.items():
+                for external_id, match_info in matches.items():
+                    # ✅ AJOUT : Vérifier que le match est bien du jour actuel
+                    start_time_str = match_info.get("start_time", "")
 
                     try:
-                        parts = match_str.split(";")
-                        if len(parts) < 29:
-                            continue
+                        # Parser la date du match
+                        match_time_str = start_time_str. replace(',', '').strip()
+                        current_year = now_mauritius().year
+                        if str(current_year) not in match_time_str:
+                            match_time_str = f"{match_time_str} {current_year}"
 
-                        external_id_str = parts[28]
-                        if not external_id_str or not external_id_str.isdigit():
-                            continue
+                        match_dt = date_parser.parse(match_time_str)
+                        if match_dt.tzinfo is None:
+                            match_dt = match_dt.replace(tzinfo=MAURITIUS_TZ)
 
-                        external_id = int(external_id_str)
-                        if external_id == 0:
+                        # ✅ FILTRE : Ignorer si pas aujourd'hui
+                        if match_dt.date() != today:
+                            filtered_out_count += 1
                             continue
-                        
-                        # ✅ AJOUT : Vérifier que l'external_id est dans les matchs validés
-                        if external_id not in all_matches:
-                            continue
-
-                        odds_1x2 = self._extract_1x2_from_getsport_match(match_str)
-
-                        if odds_1x2:
-                            if external_id not in odds_1x2_by_match:
-                                odds_1x2_by_match[external_id] = {}
-                            odds_1x2_by_match[external_id][site_key] = odds_1x2
-                            
-                            # ✅ AJOUT : Mettre à jour le cache combo immédiatement
-                            if external_id not in self.daily_combinaison_cache:
-                                self.daily_combinaison_cache[external_id] = {}
-                            self.daily_combinaison_cache[external_id][site_key] = odds_1x2
-                            
-                            site_success += 1
-                            success_count += 1
 
                     except Exception:
+                        # En cas d'erreur de parsing, on skip le match par sécurité
+                        filtered_out_count += 1
                         continue
 
-            print(f"      ✅ {site_name:15s}: {site_success} cotes extraites")
+                    # Ajouter le match validé
+                    if external_id not in all_matches:
+                        all_matches[external_id] = {}
+                    all_matches[external_id][site_key] = match_info
 
-        matches_with_odds = len([m for m in odds_1x2_by_match.values() if m])
-        print(
-            f"   ✅ {matches_with_odds} matchs avec cotes valides ({success_count} extractions)")
+                    if external_id not in self.matches_info_archive:
+                        self.matches_info_archive[external_id] = {}
+                    self.matches_info_archive[external_id][site_key] = match_info
 
-        if matches_with_odds == 0:
-            print(f"   ⚠️  Aucune cote récupérée - abandon")
-            return
+            total_matches = len(all_matches)
+            print(f"   ✅ {total_matches} matchs récupérés (du {self.current_date})")
 
-        # 3. Construire index (matchs du jour SEULEMENT)
-        print(f"   🏗️ Construction index combinaisons (matchs du jour)...")
-        combinations_index_today = self._build_combinations_index(odds_1x2_by_match)
+            if filtered_out_count > 0:
+                print(f"   🔍 {filtered_out_count} match(s) filtré(s) (autre date)")
 
-        total_combinations_today = 0
+            if total_matches == 0:
+                print(f"   ⚠️  Aucun match à analyser")
+                return
 
-        for site_index in combinations_index_today. values():
-            for matches_list in site_index.values():
-                total_combinations_today += len(matches_list)
+            # 2. Parser matchData GetSport
+            print(f"   🔍 Extraction cotes 1X2 depuis GetSport...")
+            odds_1x2_by_match = {}
+            success_count = 0
 
-        print(
-            f"   ✅ Index du jour construit ({total_combinations_today} entrées)")
+            for site_key in SITES. keys():
+                site_name = SITES[site_key]["name"]
 
-        # 4. ✅ NOUVEAU : Charger historique depuis Google Sheets
-        historical_index = await self._load_historical_odds_from_gsheets()
+                page1_data = await self.get_sport_page(site_key, self.current_date, 1, inclusive=1)
 
-        # 5. ✅ FUSIONNER : Index du jour + Historique
-        print(f"   🔗 Fusion index du jour + historique...")
-        combined_index = {site_key: {} for site_key in SITES.keys()}
+                if not page1_data:
+                    print(f"      ⚠️  {site_name}: GetSport échoué")
+                    continue
 
-        for site_key in SITES.keys():
-            # Copier matchs du jour
-            for odds_key, matches in combinations_index_today[site_key].items():
-                combined_index[site_key][odds_key] = matches. copy()
+                total_pages = page1_data. get("totalPages", 1)
+                all_pages_data = [page1_data]
 
-            # Ajouter matchs historiques
-            for odds_key, historical_matches in historical_index[site_key]. items():
-                if odds_key not in combined_index[site_key]:
-                    combined_index[site_key][odds_key] = []
+                if total_pages > 1:
+                    tasks = [
+                        self.get_sport_page(
+                            site_key, self. current_date, page_no, inclusive=0)
+                        for page_no in range(2, total_pages + 1)
+                    ]
+                    other_pages = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Ajouter avec format compatible
-                for h_match in historical_matches:
-                    combined_index[site_key][odds_key].append({
-                        "external_id": 0, 
-                        "match_name": h_match["match_name"],
-                        "competition": h_match["competition"],
-                        "start_time": f"{h_match['date']} {h_match['heure_match']}",
-                        "market_count": 0,
-                        "is_historical": True  
-                    })
+                    for page_data in other_pages:
+                        if isinstance(page_data, Exception) or not page_data:
+                            continue
+                        all_pages_data.append(page_data)
 
-        total_combined = sum(len(matches) for site_index in combined_index.values(
-        ) for matches in site_index. values())
-        print(
-            f"   ✅ Index combiné : {total_combined} entrées (jour + historique)")
+                site_success = 0
+                for page_data in all_pages_data:
+                    match_data_str = page_data.get("matchData", "")
+                    if not match_data_str:
+                        continue
 
-        # 6.  Créer les 4 feuilles avec index combiné
-        print(f"   📤 Envoi vers Google Sheets...")
-        await self._create_separate_sheets(odds_1x2_by_match, combined_index)
+                    for match_str in match_data_str.split("|"):
+                        if not match_str. strip():
+                            continue
+
+                        try:
+                            parts = match_str.split(";")
+                            if len(parts) < 29:
+                                continue
+
+                            external_id_str = parts[28]
+                            if not external_id_str or not external_id_str.isdigit():
+                                continue
+
+                            external_id = int(external_id_str)
+                            if external_id == 0:
+                                continue
+
+                            # ✅ AJOUT : Vérifier que l'external_id est dans les matchs validés
+                            if external_id not in all_matches:
+                                continue
+
+                            odds_1x2 = self._extract_1x2_from_getsport_match(
+                                match_str)
+
+                            if odds_1x2:
+                                if external_id not in odds_1x2_by_match:
+                                    odds_1x2_by_match[external_id] = {}
+                                odds_1x2_by_match[external_id][site_key] = odds_1x2
+
+                                # ✅ AJOUT : Mettre à jour le cache combo immédiatement
+                                if external_id not in self.daily_combinaison_cache:
+                                    self.daily_combinaison_cache[external_id] = {}
+                                self.daily_combinaison_cache[external_id][site_key] = odds_1x2
+
+                                site_success += 1
+                                success_count += 1
+
+                        except Exception:
+                            continue
+
+                print(f"      ✅ {site_name:15s}: {site_success} cotes extraites")
+
+            matches_with_odds = len([m for m in odds_1x2_by_match.values() if m])
+            print(
+                f"   ✅ {matches_with_odds} matchs avec cotes valides ({success_count} extractions)")
+
+            if matches_with_odds == 0:
+                print(f"   ⚠️  Aucune cote récupérée - abandon")
+                return
+
+            # 3. Construire index (matchs du jour SEULEMENT)
+            print(f"   🏗️ Construction index combinaisons (matchs du jour)...")
+            combinations_index_today = self._build_combinations_index(
+                odds_1x2_by_match)
+
+            total_combinations_today = 0
+
+            for site_index in combinations_index_today. values():
+                for matches_list in site_index.values():
+                    total_combinations_today += len(matches_list)
+
+            print(
+                f"   ✅ Index du jour construit ({total_combinations_today} entrées)")
+
+            # 4. ✅ NOUVEAU : Charger historique depuis Google Sheets
+            historical_index = await self._load_historical_odds_from_gsheets()
+
+            # 5. ✅ FUSIONNER : Index du jour + Historique
+            print(f"   🔗 Fusion index du jour + historique...")
+            combined_index = {site_key: {} for site_key in SITES.keys()}
+
+            for site_key in SITES.keys():
+                # Copier matchs du jour
+                for odds_key, matches in combinations_index_today[site_key].items():
+                    combined_index[site_key][odds_key] = matches. copy()
+
+                # Ajouter matchs historiques
+                for odds_key, historical_matches in historical_index[site_key]. items():
+                    if odds_key not in combined_index[site_key]:
+                        combined_index[site_key][odds_key] = []
+
+                    # Ajouter avec format compatible
+                    for h_match in historical_matches:
+                        combined_index[site_key][odds_key].append({
+                            "external_id": 0,
+                            "match_name": h_match["match_name"],
+                            "competition": h_match["competition"],
+                            "start_time": f"{h_match['date']} {h_match['heure_match']}",
+                            "market_count": 0,
+                            "is_historical": True
+                        })
+
+            total_combined = sum(len(matches) for site_index in combined_index.values(
+            ) for matches in site_index. values())
+            print(
+                f"   ✅ Index combiné : {total_combined} entrées (jour + historique)")
+
+            # 6.  Créer les 4 feuilles avec index combiné
+            print(f"   📤 Envoi vers Google Sheets...")
+            await self._create_separate_sheets(odds_1x2_by_match, combined_index)
+
+        finally:
+            self._disable_auto_save = False
+            self.save_cache_to_disk(force=True)
+
 
     def _get_active_matches_for_daily_combo(self):
         """
@@ -2831,124 +3164,143 @@ class MultiSitesOddsTrackerFinal:
 
     async def update_daily_combinaison_sheets(self):
         """Mise à jour complète : Reconstruit TOUTES les lignes combos pour tous les matchs actifs."""
+        time_since_last_check = (
+            now_mauritius() - self.last_result_check).total_seconds() / 60
 
-        if not DAILY_COMBINAISON_ENABLED:
-            return
+        self._disable_auto_save = True
+        try:
+            if time_since_last_check >= 60:  # 60 minutes
+                if self.gsheets.api_call_count < 45:
+                    await self.update_match_results_in_sheets()
+                    self.last_result_check = now_mauritius()
+                else:
+                    print(f"\n   ⚠️ Quota élevé → vérification résultats reportée")
 
-        if not self.daily_combinaison_cache:
-            return  # Pas encore construit
+            if not DAILY_COMBINAISON_ENABLED:
+                return
 
-        print(f"\n🔄 Mise à jour DailyCombinaison...")
+            if not self.daily_combinaison_cache:
+                return  # Pas encore construit
 
-        # 1. Récupérer TOUS les matchs actifs (< 6h, non commencés)
-        active_matches = self._get_active_matches_for_daily_combo()
+            print(f"\n🔄 Mise à jour DailyCombinaison...")
 
-        if not active_matches:
-            print(f"   ⚠️  Aucun match actif à vérifier")
-            return
+            # 1. Récupérer TOUS les matchs actifs (< 6h, non commencés)
+            active_matches = self._get_active_matches_for_daily_combo()
 
-        print(f"   🔍 Reconstruction combinaisons pour {len(active_matches)} matchs actifs...")
+            if not active_matches:
+                print(f"   ⚠️  Aucun match actif à vérifier")
+                return
 
-        # 2. POLLING GetSport pour tout remettre à jour dans le cache RAM
-        current_odds_by_site = {}  # {site_key: {external_id: "1.20/3.00/4.00"}}
+            print(
+                f"   🔍 Reconstruction combinaisons pour {len(active_matches)} matchs actifs...")
 
-        for site_key in SITES.keys():
-            current_odds_by_site[site_key] = {}
-            page1_data = await self.get_sport_page(site_key, self.current_date, 1, inclusive=1)
+            # 2. POLLING GetSport pour tout remettre à jour dans le cache RAM
+            current_odds_by_site = {}  # {site_key: {external_id: "1.20/3.00/4.00"}}
 
-            if not page1_data:
-                continue
+            for site_key in SITES.keys():
+                current_odds_by_site[site_key] = {}
+                page1_data = await self.get_sport_page(site_key, self.current_date, 1, inclusive=1)
 
-            total_pages = page1_data.get("totalPages", 1)
-            all_pages_data = [page1_data]
-
-            if total_pages > 1:
-                tasks = [
-                    self.get_sport_page(site_key, self.current_date, page_no, inclusive=0)
-                    for page_no in range(2, min(total_pages + 1, 10))
-                ]
-                other_pages = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for page_data in other_pages:
-                    if isinstance(page_data, Exception) or not page_data:
-                        continue
-                    all_pages_data.append(page_data)
-
-            # Parser matchData
-            for page_data in all_pages_data:
-                match_data_str = page_data.get("matchData", "")
-                if not match_data_str:
+                if not page1_data:
                     continue
 
-                for match_str in match_data_str.split("|"):
-                    if not match_str.strip():
+                total_pages = page1_data.get("totalPages", 1)
+                all_pages_data = [page1_data]
+
+                if total_pages > 1:
+                    tasks = [
+                        self.get_sport_page(
+                            site_key, self.current_date, page_no, inclusive=0)
+                        for page_no in range(2, min(total_pages + 1, 10))
+                    ]
+                    other_pages = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for page_data in other_pages:
+                        if isinstance(page_data, Exception) or not page_data:
+                            continue
+                        all_pages_data.append(page_data)
+
+                # Parser matchData
+                for page_data in all_pages_data:
+                    match_data_str = page_data.get("matchData", "")
+                    if not match_data_str:
                         continue
 
-                    try:
-                        parts = match_str.split(";")
-                        if len(parts) < 29:
+                    for match_str in match_data_str.split("|"):
+                        if not match_str.strip():
                             continue
 
-                        external_id_str = parts[28]
-                        if not external_id_str or not external_id_str.isdigit():
+                        try:
+                            parts = match_str.split(";")
+                            if len(parts) < 29:
+                                continue
+
+                            external_id_str = parts[28]
+                            if not external_id_str or not external_id_str.isdigit():
+                                continue
+
+                            external_id = int(external_id_str)
+                            if external_id == 0 or external_id not in active_matches:
+                                continue
+
+                            odds_1x2 = self._extract_1x2_from_getsport_match(
+                                match_str)
+
+                            if odds_1x2:
+                                current_odds_by_site[site_key][external_id] = odds_1x2
+                                # MAJ cache RAM :
+                                if external_id not in self.daily_combinaison_cache:
+                                    self.daily_combinaison_cache[external_id] = {}
+                                self.daily_combinaison_cache[external_id][site_key] = odds_1x2
+                        except Exception:
                             continue
 
-                        external_id = int(external_id_str)
-                        if external_id == 0 or external_id not in active_matches:
-                            continue
+            # 3. Build index combos du jour (RAM)
+            new_combinations_index_today = self._build_combinations_index(
+                self.daily_combinaison_cache)
 
-                        odds_1x2 = self._extract_1x2_from_getsport_match(match_str)
+            # 4. Charger historique (Sheet 1X2_FullTime) et fusionner
+            print(f"   🔗 Fusion RAM + historique...")
 
-                        if odds_1x2:
-                            current_odds_by_site[site_key][external_id] = odds_1x2
-                            # MAJ cache RAM :
-                            if external_id not in self.daily_combinaison_cache:
-                                self.daily_combinaison_cache[external_id] = {}
-                            self.daily_combinaison_cache[external_id][site_key] = odds_1x2
-                    except Exception:
-                        continue
+            historical_index = await self._load_historical_odds_from_gsheets()
+            new_combinations_index = {site_key: {} for site_key in SITES.keys()}
 
-        # 3. Build index combos du jour (RAM)
-        new_combinations_index_today = self._build_combinations_index(self.daily_combinaison_cache)
+            for site_key in SITES.keys():
+                # Ajouter les matchs du jour
+                for odds_key, matches in new_combinations_index_today[site_key].items():
+                    new_combinations_index[site_key][odds_key] = matches.copy()
 
-        # 4. Charger historique (Sheet 1X2_FullTime) et fusionner
-        print(f"   🔗 Fusion RAM + historique...")
+                # Ajouter les historiques
+                for odds_key, historical_matches in historical_index[site_key].items():
+                    if odds_key not in new_combinations_index[site_key]:
+                        new_combinations_index[site_key][odds_key] = []
+                    for h_match in historical_matches:
+                        new_combinations_index[site_key][odds_key].append({
+                            "external_id": 0,
+                            "match_name": h_match["match_name"],
+                            "competition": h_match["competition"],
+                            "start_time": f"{h_match['date']} {h_match['heure_match']}",
+                            "market_count": 0,
+                            "is_historical": True
+                        })
 
-        historical_index = await self._load_historical_odds_from_gsheets()
-        new_combinations_index = {site_key: {} for site_key in SITES.keys()}
+            self.combinations_index_cache = new_combinations_index
+            self.combinations_index_cache["last_rebuild"] = now_mauritius()
 
-        for site_key in SITES.keys():
-            # Ajouter les matchs du jour
-            for odds_key, matches in new_combinations_index_today[site_key].items():
-                new_combinations_index[site_key][odds_key] = matches.copy()
+            # 5. Build la liste de changements : ici on FORCE la regénération de TOUTES les lignes combos !
+            # changed_matches = {external_id: {...}} -- on met tous les actifs
+            # (le contenu n'a pas d'importance dans ta fonction downstream, c'est la clé qui compte)
+            changed_matches = {external_id: {"ALL": True}
+                            for external_id in active_matches}
 
-            # Ajouter les historiques
-            for odds_key, historical_matches in historical_index[site_key].items():
-                if odds_key not in new_combinations_index[site_key]:
-                    new_combinations_index[site_key][odds_key] = []
-                for h_match in historical_matches:
-                    new_combinations_index[site_key][odds_key].append({
-                        "external_id": 0,
-                        "match_name": h_match["match_name"],
-                        "competition": h_match["competition"],
-                        "start_time": f"{h_match['date']} {h_match['heure_match']}",
-                        "market_count": 0,
-                        "is_historical": True
-                    })
-
-        self.combinations_index_cache = new_combinations_index
-        self.combinations_index_cache["last_rebuild"] = now_mauritius()
-
-        # 5. Build la liste de changements : ici on FORCE la regénération de TOUTES les lignes combos !
-        # changed_matches = {external_id: {...}} -- on met tous les actifs
-        # (le contenu n'a pas d'importance dans ta fonction downstream, c'est la clé qui compte)
-        changed_matches = {external_id: {"ALL": True} for external_id in active_matches}
-
-        # 6. MAJ Sheets en reconstruisant toutes les lignes combos
-        print(f"   📝 Reconstruction complète des feuilles DailyCombinaison...")
-        await self._update_separate_sheets_incremental(changed_matches, new_combinations_index)
-        print(f"   ✅ Mise à jour terminée (rebuild full combos) !")
-
+            # 6. MAJ Sheets en reconstruisant toutes les lignes combos
+            print(f"   📝 Reconstruction complète des feuilles DailyCombinaison...")
+            await self._update_separate_sheets_incremental(changed_matches, new_combinations_index)
+            print(f"   ✅ Mise à jour terminée (rebuild full combos) !")
+        finally:
+            self._disable_auto_save = False
+            self.save_cache_to_disk(force=True)
+        
     async def _update_summary_sheet_incremental(self, changed_matches: dict, combinations_index: dict):
         """Mettre à jour UNIQUEMENT les lignes modifiées dans DailyCombinaison"""
 
@@ -3099,6 +3451,8 @@ class MultiSitesOddsTrackerFinal:
         print("=" * 70)
         print()
 
+        self.last_result_check = now_mauritius()
+
         if len(self.completed_matches) > 0 or self.local_cumulative_excel.exists():
             print(f"⚠️  Fichier Excel détecté")
 
@@ -3135,7 +3489,8 @@ class MultiSitesOddsTrackerFinal:
                 if self.iteration % self.DAILY_COMBO_UPDATE_INTERVAL == 0:
                     await self.poll_all_sites_and_detect_odds_changes()
 
-                should_full_getsport = (self.iteration % self.FULL_GETSPORT_INTERVAL == 1)
+                should_full_getsport = (self.iteration %
+                                        self.FULL_GETSPORT_INTERVAL == 1)
 
                 if should_full_getsport:
                     print(f"\n📡 GetSport COMPLET (pagination parallèle)")
