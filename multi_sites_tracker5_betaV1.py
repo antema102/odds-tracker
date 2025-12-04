@@ -1056,7 +1056,7 @@ class MultiSitesOddsTrackerFinal:
                     odds_string = sites_odds[site_key]
                     odds_key = odds_string.replace(" ", "")
 
-                    all_matches = combinations_index[site_key]. get(
+                    all_matches = combinations_index[site_key].get(
                         odds_key, [])
                     matching_matches = [
                         m for m in all_matches if m.get("external_id") != external_id
@@ -1110,7 +1110,7 @@ class MultiSitesOddsTrackerFinal:
 
                     # ✅ Remplacer ou ajouter la ligne dans le dictionnaire
                     existing_rows[match_principal] = [
-                        new_row. get(col, "") for col in header]
+                        new_row.get(col, "") for col in header]
                     updated_count += 1
 
                 # ✅ NOUVEAU : Réécrire TOUTE la feuille avec lignes existantes + mises à jour
