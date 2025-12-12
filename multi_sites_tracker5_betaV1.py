@@ -2184,7 +2184,7 @@ class MultiSitesOddsTrackerFinal:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Indexer par site et matchId
+        # Indexer par site et matchId (fetch_match_results() popule déjà le cache)
         results_by_site = {}
 
         for site_key, result in zip(SITES.keys(), results):
@@ -2192,20 +2192,10 @@ class MultiSitesOddsTrackerFinal:
                 results_by_site[site_key] = {}
                 continue
 
-            results_by_site[site_key] = {}
-
-            for country in result.get("transaction", []):
-                for match in country.get("matches", []):
-                    match_id = match.get("matchId")
-                    if match_id:
-                        results_by_site[site_key][match_id] = {
-                            "fullTime": match.get("fullTime", ""),
-                            "halfTime": match.get("halfTime", ""),
-                            "secondHalfTime": match.get("secondHalfTime", "")
-                        }
+            # Les résultats sont déjà dans self.match_results_cache grâce à fetch_match_results()
+            results_by_site[site_key] = self.match_results_cache.get(site_key, {})
 
         total_results = sum(len(r) for r in results_by_site.values())
-        self.match_results_cache = results_by_site
 
         if total_results == 0:
             print(f"   ⚠️ Aucun résultat disponible")
@@ -2322,6 +2312,7 @@ class MultiSitesOddsTrackerFinal:
     async def fetch_match_results(self, site_key: str, date: str) -> Optional[dict]:
         """
         Récupérer les résultats via /webapi/searchresult
+        ET peupler le cache self.match_results_cache
 
         Args:
             site_key: Clé du site (ex: "stevenhills")
@@ -2342,7 +2333,24 @@ class MultiSitesOddsTrackerFinal:
         try:
             async with self.session.post(url, headers=headers, data=payload, timeout=TIMEOUT) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    result = await resp.json()
+                    
+                    # ✅ PEUPLER LE CACHE
+                    if result and result.get("isSuccess"):
+                        if site_key not in self.match_results_cache:
+                            self.match_results_cache[site_key] = {}
+                        
+                        for country in result.get("transaction", []):
+                            for match in country.get("matches", []):
+                                match_id = match.get("matchId")
+                                if match_id:
+                                    self.match_results_cache[site_key][match_id] = {
+                                        "fullTime": match.get("fullTime", ""),
+                                        "halfTime": match.get("halfTime", ""),
+                                        "secondHalfTime": match.get("secondHalfTime", "")
+                                    }
+                    
+                    return result
                 else:
                     return None
         except:
