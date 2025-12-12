@@ -972,7 +972,7 @@ class MultiSitesOddsTrackerFinal:
                 "playonlineltd": {...}
             }
         """
-        results_cache = {site_key: {} for site_key in SITES.keys()}
+        results_cache = {site_key: {} for site_key in self.SITE_ORDER}
         
         try:
             worksheet = self.gsheets.get_or_create_worksheet("1X2_FullTime")
@@ -1013,7 +1013,7 @@ class MultiSitesOddsTrackerFinal:
                 result = row[col_result]
                 
                 # Seulement si résultat valide
-                if not result or result in ["", "C", None]:
+                if not result or result == "C":
                     continue
                 
                 # Pour chaque site, récupérer le matchID
