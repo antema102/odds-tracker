@@ -2184,7 +2184,7 @@ class MultiSitesOddsTrackerFinal:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Indexer par site et matchId (fetch_match_results() popule déjà le cache)
+        # Indexer par site et matchId (fetch_match_results() peuple déjà le cache)
         results_by_site = {}
 
         for site_key, result in zip(SITES.keys(), results):
@@ -2193,6 +2193,7 @@ class MultiSitesOddsTrackerFinal:
                 continue
 
             # Les résultats sont déjà dans self.match_results_cache grâce à fetch_match_results()
+            # Si le cache n'a pas été peuplé pour ce site, utiliser un dict vide
             results_by_site[site_key] = self.match_results_cache.get(site_key, {})
 
         total_results = sum(len(r) for r in results_by_site.values())
@@ -2312,7 +2313,7 @@ class MultiSitesOddsTrackerFinal:
     async def fetch_match_results(self, site_key: str, date: str) -> Optional[dict]:
         """
         Récupérer les résultats via /webapi/searchresult
-        ET peupler le cache self.match_results_cache
+        et peupler le cache self.match_results_cache
 
         Args:
             site_key: Clé du site (ex: "stevenhills")
