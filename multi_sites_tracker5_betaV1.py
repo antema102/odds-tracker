@@ -513,6 +513,15 @@ class GoogleSheetsManager:
                     continue
 
                 expected_header = list(rows[0].keys())
+
+                # ✅ AJOUTER : Validation avant écriture
+                for i, row in enumerate(rows):
+                    if list(row.keys()) != expected_header:
+                        print(f"         ⚠️  Ligne {i+1} décalage de colonnes!")
+                        print(f"            Attendu: {expected_header}")
+                        print(f"            Obtenu: {list(row.keys())}")
+                        
+                # Afficher les différences
                 self._ensure_header(worksheet, sheet_name, expected_header)
 
                 data_to_append = [list(row.values()) for row in rows]
@@ -618,6 +627,9 @@ class MultiSitesOddsTrackerFinal:
 
     # Limits
     MAX_MATCHING_MATCHES = 100  # Prevent sheet overload
+
+    # ✅ AJOUTER CECI : Ordre fixe des sites pour un alignement cohérent des colonnes
+    SITE_ORDER = ["stevenhills", "superscore", "totelepep", "playonlineltd"]
 
     def __init__(self, output_dir="multi_sites_odds"):
         self.output_dir = Path(output_dir)
@@ -1217,7 +1229,7 @@ class MultiSitesOddsTrackerFinal:
 
         # On reconstitue le mapping des compétitions à partir des combosIndex
         competitions = {}
-        for site_key in SITES.keys():
+        for site_key in self.SITE_ORDER:
             for match_list in combinations_index[site_key].values():
                 for m in match_list:
                     cid = m.get("competition_id")
@@ -2073,7 +2085,7 @@ class MultiSitesOddsTrackerFinal:
 
     # ⏩ Modifie ta méthode _prepare_sheets_data pour ajouter le score correspondant au marché sur chaque onglet
     def _prepare_sheets_data(self, external_id: int, matches_info: Dict[str, dict]) -> Dict[str, List[Dict]]:
-        """Préparer données pour Google Sheets AVEC colonnes matchID et résultats -- alignement strict!"""
+        """Préparer données pour Google Sheets AVEC colonnes matchID et résultats -- alignement strict! """
 
         first_match = list(matches_info.values())[0]
 
@@ -2084,6 +2096,7 @@ class MultiSitesOddsTrackerFinal:
                     competition_name = site_odds["competition_name"]
                     break
 
+        # Données de base (6 premières colonnes)
         base_data = {
             "Date": now_mauritius_str("%Y-%m-%d"),
             "Heure": now_mauritius_str("%H:%M:%S"),
@@ -2095,125 +2108,117 @@ class MultiSitesOddsTrackerFinal:
 
         all_market_keys = set()
         for site_odds in self.captured_odds[external_id].values():
-            all_market_keys.update(site_odds.get("markets", {}).keys())
+            all_market_keys.update(site_odds.get("markets", {}). keys())
 
         sheets_data = {}
 
         for market_key in all_market_keys:
             sheet_name = MARKET_SHEET_MAPPING.get(market_key, market_key[:31])
-            row = base_data.copy()
+            
+            # ✅ CRITIQUE : Construire les données de ligne avec ordre EXPLICITE
+            row_data = base_data.copy()
 
-            # ✅ BUG FIX #2: Add odds columns + matchID columns FIRST (before result columns)
-            for site_key in SITES.keys():
+            # Ajouter les colonnes de cotes dans l'ORDRE EXACT (en utilisant SITE_ORDER)
+            for site_key in self.SITE_ORDER:
                 site_name = SITES[site_key]["name"]
 
                 if site_key in self.captured_odds[external_id]:
-                    markets = self.captured_odds[external_id][site_key].get("markets", {})
+                    markets = self. captured_odds[external_id][site_key].get("markets", {})
                     if market_key in markets:
                         odds_str = self._format_odds_for_display(
-                            markets[market_key].get("odds", {}))
-                        row[site_name] = odds_str
+                            markets[market_key]. get("odds", {}))
+                        row_data[site_name] = odds_str
                     else:
-                        row[site_name] = ""
+                        row_data[site_name] = ""
                 else:
-                    row[site_name] = ""
+                    row_data[site_name] = ""
 
-                # Colonne matchID spécifique au site
+            # Ajouter les colonnes matchID dans l'ORDRE EXACT (en utilisant SITE_ORDER)
+            for site_key in self.SITE_ORDER:
+                site_name = SITES[site_key]["name"]
                 match_info = matches_info.get(site_key)
                 if match_info:
-                    row[f"matchID_{site_name}"] = match_info.get("match_id", "")
+                    row_data[f"matchID_{site_name}"] = match_info.get("match_id", "")
                 else:
-                    row[f"matchID_{site_name}"] = ""
+                    row_data[f"matchID_{site_name}"] = ""
             
-            # ✅ BUG FIX #2: THEN add result columns (AFTER odds and matchID)
+            # Ajouter la colonne résultat selon le nom de la feuille (APRÈS cotes et matchID)
             if sheet_name == "1X2_FullTime":
-                row["Résultat_FullTime"] = ""
+                row_data["Résultat_FullTime"] = ""
             elif sheet_name == "1X2_HalfTime":
-                row["Résultat_HalfTime"] = ""
+                row_data["Résultat_HalfTime"] = ""
             elif sheet_name == "1X2_2ndHalf":
-                row["Résultat_SecondHalf"] = ""
+                row_data["Résultat_SecondHalf"] = ""
             elif "OverUnder" in sheet_name and "FT" in sheet_name:
-                row["Résultat_FullTime"] = ""
+                row_data["Résultat_FullTime"] = ""
             elif "OverUnder" in sheet_name and "HT" in sheet_name:
-                row["Résultat_HalfTime"] = ""
+                row_data["Résultat_HalfTime"] = ""
 
-            # ==== RIGUEUR DANS L'ORDRE ====
-            # ✅ BUG FIX #2: HEADER STRICT with correct order (result columns AFTER odds/matchID)
+            # ✅ CRITIQUE : Définir le header COMPLET avec TOUTES les colonnes dans l'ordre EXACT
             header = [
                 "Date", "Heure", "External ID", "Match", "Compétition", "Heure Match",
                 "StevenHills", "SuperScore", "ToteLePEP", "PlayOnline",
                 "matchID_StevenHills", "matchID_SuperScore", "matchID_ToteLePEP", "matchID_PlayOnline",
             ]
-            # ✅ BUG FIX #2: Colonne résultat selon le marché traité (AFTER odds and matchID)
+            
+            # Ajouter la colonne résultat au header selon le nom de la feuille
             if sheet_name == "1X2_FullTime":
                 header.append("Résultat_FullTime")
             elif sheet_name == "1X2_HalfTime":
                 header.append("Résultat_HalfTime")
             elif sheet_name == "1X2_2ndHalf":
-                header.append("Résultat_SecondHalf")
+                header. append("Résultat_SecondHalf")
             elif "OverUnder" in sheet_name and "FT" in sheet_name:
                 header.append("Résultat_FullTime")
             elif "OverUnder" in sheet_name and "HT" in sheet_name:
                 header.append("Résultat_HalfTime")
-            # (ajouter ici d'autres colonnes techniques au besoin)
 
-            # ✅ FIX: Construction stricte avec DICTIONNAIRE (garantit ordre des colonnes)
-            final_row_dict = {col: row.get(col, "") for col in header}
+            # ✅ CRITIQUE : Convertir en dict ordonné correspondant EXACTEMENT au header
+            final_row_dict = {col: row_data. get(col, "") for col in header}
+            
+            # ✅ VALIDATION : Vérifier l'alignement
+            if set(final_row_dict.keys()) != set(header):
+                missing = set(header) - set(final_row_dict.keys())
+                extra = set(final_row_dict.keys()) - set(header)
+                print(f"⚠️  Décalage de colonnes dans {sheet_name}:")
+                if missing:
+                    print(f"    Manquantes: {missing}")
+                if extra:
+                    print(f"    En trop: {extra}")
 
             if sheet_name not in sheets_data:
                 sheets_data[sheet_name] = []
             sheets_data[sheet_name].append(final_row_dict)
 
         return sheets_data
+    
 
+    def _validate_column_alignment(self, sheet_name: str, header: List[str], rows: List[Dict]) -> bool:
+        """Valider que toutes les lignes ont les bonnes colonnes dans le bon ordre"""
+        for i, row in enumerate(rows):
+            if list(row.keys()) != header:
+                print(f"❌ Erreur d'alignement dans {sheet_name}, ligne {i+1}:")
+                print(f"   Attendu: {header}")
+                print(f"   Obtenu:  {list(row.keys())}")
+                
+                # Afficher les différences
+                missing = [col for col in header if col not in row]
+                extra = [col for col in row if col not in header]
+                if missing:
+                    print(f"   Colonnes manquantes: {missing}")
+                if extra:
+                    print(f"   Colonnes en trop: {extra}")
+                return False
+        return True
 
     async def update_match_results_in_sheets(self):
-        """Vérifier et mettre à jour les résultats (toutes les heures)"""
+        """Vérifier et mettre à jour les résultats par DATE (gestion matchs tardifs)"""
 
         print(f"\n{'='*70}")
-        print(f"🏆 VÉRIFICATION RÉSULTATS DES MATCHS")
+        print(f"🏆 VÉRIFICATION RÉSULTATS DES MATCHS (PAR DATE)")
         print(f"{'='*70}")
 
-        date_formatted = now_mauritius().strftime("%d/%m/%Y")
-
-        # 1. Récupérer résultats des 4 sites
-        tasks = [
-            self.fetch_match_results(site_key, date_formatted)
-            for site_key in SITES.keys()
-        ]
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Indexer par site et matchId
-        results_by_site = {}
-
-        for site_key, result in zip(SITES.keys(), results):
-            if isinstance(result, Exception) or not result or not result.get("isSuccess"):
-                results_by_site[site_key] = {}
-                continue
-
-            results_by_site[site_key] = {}
-
-            for country in result.get("transaction", []):
-                for match in country.get("matches", []):
-                    match_id = match.get("matchId")
-                    if match_id:
-                        results_by_site[site_key][match_id] = {
-                            "fullTime": match.get("fullTime", ""),
-                            "halfTime": match.get("halfTime", ""),
-                            "secondHalfTime": match.get("secondHalfTime", "")
-                        }
-
-        total_results = sum(len(r) for r in results_by_site.values())
-        self.match_results_cache = results_by_site
-
-        if total_results == 0:
-            print(f"   ⚠️ Aucun résultat disponible")
-            return
-
-        print(f"   ✅ {total_results} résultats récupérés")
-
-        # 2. Mettre à jour les feuilles
+        # Feuilles à mettre à jour
         sheets_to_update = [
             ("1X2_FullTime", "FullTime", "fullTime"),
             ("1X2_HalfTime", "HalfTime", "halfTime"),
@@ -2239,85 +2244,175 @@ class MultiSitesOddsTrackerFinal:
 
             header = all_values[0]
 
+            # Trouver colonnes nécessaires
             try:
+                col_date = header.index("Date")
                 col_result = header.index(f"Résultat_{result_suffix}")
             except ValueError:
-                print(f"      ⚠️ Colonne résultat non trouvée")
+                print(f"      ⚠️ Colonnes manquantes (Date ou Résultat)")
                 continue
 
             # Trouver colonnes matchID
             matchid_cols = {}
-            for site_key in SITES.keys():
+            for site_key in self.SITE_ORDER:
                 site_name = SITES[site_key]["name"]
                 try:
-                    matchid_cols[site_key] = header.index(
-                        f"matchID_{site_name}")
+                    matchid_cols[site_key] = header.index(f"matchID_{site_name}")
                 except ValueError:
                     matchid_cols[site_key] = None
 
-            # Parcourir lignes
-            updates_made = 0
+            # ✅ NOUVEAU : Grouper lignes par date + vérifier si résultats manquants
+            dates_needing_results = {}  # {date: [row_indices]}
 
             for row_index, row in enumerate(all_values[1:], start=2):
-                if len(row) <= col_result:
+                if len(row) <= max(col_date, col_result):
                     continue
 
-                # Si résultat déjà rempli, skip
-                existing_result = row[col_result] if col_result < len(
-                    row) else ""
+                date_str = row[col_date] if col_date < len(row) else ""
+                existing_result = row[col_result] if col_result < len(row) else ""
+
+                # Skip si résultat déjà rempli
                 if existing_result and existing_result not in ["", "C"]:
                     continue
 
-                # Chercher résultat dans les 4 sites
-                result_found = None
-
-                for site_key in SITES.keys():
+                # Vérifier s'il y a AU MOINS 1 matchID
+                has_match_id = False
+                for site_key in self.SITE_ORDER:
                     col_idx = matchid_cols.get(site_key)
-                    if col_idx is None or len(row) <= col_idx:
-                        continue
-
-                    match_id_str = row[col_idx]
-                    if not match_id_str:
-                        continue
-
-                    try:
-                        match_id = int(match_id_str)
-                    except ValueError:
-                        continue
-
-                    # Chercher résultat
-                    if site_key in results_by_site and match_id in results_by_site[site_key]:
-                        result_data = results_by_site[site_key][match_id]
-                        result_found = result_data. get(json_key, "")
-
-                        if result_found and result_found not in ["", "C", None]:
+                    if col_idx is not None and len(row) > col_idx:
+                        match_id_str = row[col_idx]
+                        if match_id_str and match_id_str.strip():
+                            has_match_id = True
                             break
 
-                # Mettre à jour si trouvé
-                if result_found and result_found not in ["", "C", None]:
-                    try:
-                        col_letter = chr(65 + col_result)
+                if has_match_id and date_str:
+                    if date_str not in dates_needing_results:
+                        dates_needing_results[date_str] = []
+                    dates_needing_results[date_str].append(row_index)
 
-                        def update_cell():
-                            return worksheet.update(
-                                values=[[result_found]],
-                                range_name=f"{col_letter}{row_index}"
-                            )
+            if not dates_needing_results:
+                print(f"      ✅ Tous les résultats sont à jour")
+                continue
 
-                        self.gsheets._execute_with_retry(update_cell)
-                        updates_made += 1
-                        total_updates += 1
+            print(f"      📅 {len(dates_needing_results)} date(s) avec résultats manquants")
 
-                        await asyncio.sleep(1)
-                    except:
+            # ✅ NOUVEAU : Trier les dates par ordre chronologique
+            sorted_dates = sorted(dates_needing_results.keys())
+
+            # ✅ NOUVEAU : Pour chaque date, faire 1 POST et compléter
+            for date_str in sorted_dates:
+                row_indices = dates_needing_results[date_str]
+                
+                print(f"\n      📆 Traitement date {date_str} ({len(row_indices)} ligne(s))...")
+
+                # Convertir date format YYYY-MM-DD vers DD/MM/YYYY
+                try:
+                    from datetime import datetime
+                    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                    date_formatted = date_obj.strftime("%d/%m/%Y")
+                except:
+                    print(f"         ⚠️ Format de date invalide : {date_str}")
+                    continue
+
+                # Récupérer résultats des 4 sites pour cette date
+                tasks = [
+                    self.fetch_match_results(site_key, date_formatted)
+                    for site_key in SITES. keys()
+                ]
+
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Indexer par site et matchId
+                results_by_site = {}
+
+                for site_key, result in zip(SITES.keys(), results):
+                    if isinstance(result, Exception) or not result or not result.get("isSuccess"):
+                        results_by_site[site_key] = {}
                         continue
 
-            if updates_made > 0:
-                print(f"      ✅ {updates_made} résultat(s) ajouté(s)")
+                    results_by_site[site_key] = {}
+
+                    for country in result.get("transaction", []):
+                        for match in country.get("matches", []):
+                            match_id = match.get("matchId")
+                            if match_id:
+                                results_by_site[site_key][match_id] = {
+                                    "fullTime": match.get("fullTime", ""),
+                                    "halfTime": match.get("halfTime", ""),
+                                    "secondHalfTime": match.get("secondHalfTime", "")
+                                }
+
+                total_results_for_date = sum(len(r) for r in results_by_site.values())
+
+                if total_results_for_date == 0:
+                    print(f"         ⚠️ Aucun résultat disponible pour {date_formatted}")
+                    continue
+
+                print(f"         ✅ {total_results_for_date} résultats récupérés")
+
+                # Mettre à jour les lignes de cette date
+                updates_made = 0
+
+                for row_index in row_indices:
+                    row = all_values[row_index - 1]  # -1 car all_values inclut header
+
+                    # Skip si résultat déjà rempli (double check)
+                    existing_result = row[col_result] if col_result < len(row) else ""
+                    if existing_result and existing_result not in ["", "C"]:
+                        continue
+
+                    # Chercher résultat dans les 4 sites
+                    result_found = None
+
+                    for site_key in self.SITE_ORDER:
+                        col_idx = matchid_cols.get(site_key)
+                        if col_idx is None or len(row) <= col_idx:
+                            continue
+
+                        match_id_str = row[col_idx]
+                        if not match_id_str:
+                            continue
+
+                        try:
+                            match_id = int(match_id_str)
+                        except ValueError:
+                            continue
+
+                        # Chercher résultat
+                        if site_key in results_by_site and match_id in results_by_site[site_key]:
+                            result_data = results_by_site[site_key][match_id]
+                            result_found = result_data.get(json_key, "")
+
+                            if result_found and result_found not in ["", "C", None]:
+                                break
+
+                    # Mettre à jour si trouvé
+                    if result_found and result_found not in ["", "C", None]:
+                        try:
+                            col_letter = chr(65 + col_result)
+
+                            def update_cell():
+                                return worksheet.update(
+                                    values=[[result_found]],
+                                    range_name=f"{col_letter}{row_index}"
+                                )
+
+                            self.gsheets._execute_with_retry(update_cell)
+                            updates_made += 1
+                            total_updates += 1
+
+                            await asyncio.sleep(1)
+                        except Exception as e:
+                            print(f"         ❌ Erreur update ligne {row_index}: {e}")
+                            continue
+
+                if updates_made > 0:
+                    print(f"         ✅ {updates_made} résultat(s) ajouté(s) pour {date_str}")
 
         print(f"\n{'='*70}")
         print(f"✅ Total: {total_updates} résultat(s) ajouté(s)")
         print(f"{'='*70}\n")
+
 
     async def fetch_match_results(self, site_key: str, date: str) -> Optional[dict]:
         """
@@ -2908,7 +3003,7 @@ class MultiSitesOddsTrackerFinal:
             # Indices des colonnes de sites (ex: "StevenHills", "SuperScore", etc.)
             site_columns = {}
 
-            for site_key in SITES.keys():
+            for site_key in self.SITE_ORDER:
                 site_name = SITES[site_key]["name"]
                 try:
                     site_columns[site_key] = header.index(site_name)
@@ -3144,7 +3239,7 @@ class MultiSitesOddsTrackerFinal:
             print(f"   🔗 Fusion index du jour + historique...")
             combined_index = {site_key: {} for site_key in SITES.keys()}
 
-            for site_key in SITES.keys():
+            for site_key in self.SITE_ORDER:
                 # Copier matchs du jour
                 for odds_key, matches in combinations_index_today[site_key].items():
                     combined_index[site_key][odds_key] = matches. copy()
@@ -3241,7 +3336,7 @@ class MultiSitesOddsTrackerFinal:
             # 2. POLLING GetSport pour tout remettre à jour dans le cache RAM
             current_odds_by_site = {}  # {site_key: {external_id: "1.20/3.00/4.00"}}
 
-            for site_key in SITES.keys():
+            for site_key in self.SITE_ORDER:
                 current_odds_by_site[site_key] = {}
                 page1_data = await self.get_sport_page(site_key, self.current_date, 1, inclusive=1)
 
@@ -3309,7 +3404,7 @@ class MultiSitesOddsTrackerFinal:
             historical_index = await self._load_historical_odds_from_gsheets()
             new_combinations_index = {site_key: {} for site_key in SITES.keys()}
 
-            for site_key in SITES.keys():
+            for site_key in self.SITE_ORDER:
                 # Ajouter les matchs du jour
                 for odds_key, matches in new_combinations_index_today[site_key].items():
                     new_combinations_index[site_key][odds_key] = matches.copy()
@@ -3407,7 +3502,7 @@ class MultiSitesOddsTrackerFinal:
                 }
 
                 # Pour chaque site, recalculer cotes + nb combos
-                for site_key in SITES.keys():
+                for site_key in self.SITE_ORDER:
                     site_name = SITES[site_key]["name"]
 
                     odds_string = self.daily_combinaison_cache.get(
@@ -3463,7 +3558,7 @@ class MultiSitesOddsTrackerFinal:
     async def clear_daily_combinaison_sheets(self):
         """Efface le contenu des 4 feuilles DailyCombinaison dans Google Sheets"""
         print("🧹 Effacement des feuilles DailyCombinaison...")
-        for site_key in SITES.keys():
+        for site_key in self.SITE_ORDER:
             sheet_name = f"DailyCombinaison_{SITES[site_key]['name']}"
             worksheet = self.gsheets.get_or_create_worksheet(sheet_name)
             if worksheet:
