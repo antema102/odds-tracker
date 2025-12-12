@@ -960,10 +960,94 @@ class MultiSitesOddsTrackerFinal:
         # Si on arrive ici, toutes les tentatives ont échoué
         return None
 
+    async def _build_results_cache_from_sheet(self) -> Dict[str, Dict[int, str]]:
+        """
+        Construire un cache des résultats depuis la feuille 1X2_FullTime
+        
+        Returns:
+            {
+                "stevenhills": {123456: "1-1", 789012: "2-0"},
+                "superscore": {123456: "1-1"},
+                "totelepep": {...},
+                "playonlineltd": {...}
+            }
+        """
+        results_cache = {site_key: {} for site_key in SITES.keys()}
+        
+        try:
+            worksheet = self.gsheets.get_or_create_worksheet("1X2_FullTime")
+            if not worksheet:
+                return results_cache
+            
+            def get_all():
+                return worksheet.get_all_values()
+            
+            all_values = self.gsheets._execute_with_retry(get_all)
+            
+            if not all_values or len(all_values) < 2:
+                return results_cache
+            
+            header = all_values[0]
+            
+            # Trouver les colonnes matchID pour chaque site
+            matchid_cols = {}
+            for site_key in self.SITE_ORDER:
+                site_name = SITES[site_key]["name"]
+                try:
+                    matchid_cols[site_key] = header.index(f"matchID_{site_name}")
+                except ValueError:
+                    matchid_cols[site_key] = None
+            
+            # Trouver colonne résultat
+            try:
+                col_result = header.index("Résultat_FullTime")
+            except ValueError:
+                print("   ⚠️  Colonne Résultat_FullTime manquante")
+                return results_cache
+            
+            # Parser les résultats
+            for row in all_values[1:]:
+                if len(row) <= col_result:
+                    continue
+                
+                result = row[col_result]
+                
+                # Seulement si résultat valide
+                if not result or result in ["", "C", None]:
+                    continue
+                
+                # Pour chaque site, récupérer le matchID
+                for site_key in self.SITE_ORDER:
+                    col_idx = matchid_cols.get(site_key)
+                    if col_idx is None or len(row) <= col_idx:
+                        continue
+                    
+                    match_id_str = row[col_idx]
+                    if not match_id_str:
+                        continue
+                    
+                    try:
+                        match_id = int(match_id_str)
+                        results_cache[site_key][match_id] = result
+                    except ValueError:
+                        continue
+            
+            total_results = sum(len(site_cache) for site_cache in results_cache.values())
+            print(f"   📊 Cache résultats chargé : {total_results} résultats depuis Google Sheets")
+            return results_cache
+            
+        except Exception as e:
+            print(f"   ❌ Erreur cache résultats : {e}")
+            return results_cache
+
     async def _update_separate_sheets_incremental(self, changed_matches: dict, combinations_index: dict):
         """Mettre à jour les 4 feuilles (format 1 colonne par match) - VERSION CORRIGÉE"""
 
         try:
+            # ✅ NOUVEAU : Charger cache depuis Google Sheets
+            print("   📊 Chargement résultats depuis 1X2_FullTime...")
+            results_cache = await self._build_results_cache_from_sheet()
+            
             # Récupérer noms des matchs modifiés
             changed_match_names = set()
             for external_id in changed_matches.keys():
@@ -1092,28 +1176,22 @@ class MultiSitesOddsTrackerFinal:
 
                     # Ajouter matchs similaires avec résultats
                     for i, match in enumerate(matching_matches_sorted, start=1):
-                        match_name = match. get('match_name', '')
+                        match_name = match.get('match_name', '')
                         competition = match.get('competition', '')
-
-                        # Récupérer résultat du match similaire
-                        match_result = ""
                         similar_external_id = match.get("external_id")
 
+                        # ✅ NOUVEAU : Récupérer résultat depuis Google Sheets
+                        match_result = ""
                         if similar_external_id and similar_external_id != 0:
-                            similar_match_info = self.matches_info_archive.get(
-                                similar_external_id, {})
-
+                            similar_match_info = self.matches_info_archive.get(similar_external_id, {})
+                            
                             if similar_match_info and site_key in similar_match_info:
-                                similar_match_id = similar_match_info[site_key]. get(
-                                    "match_id")
-
-                                if site_key in self.match_results_cache:
-                                    if similar_match_id in self.match_results_cache[site_key]:
-                                        result_data = self.match_results_cache[site_key][similar_match_id]
-                                        ft = result_data.get("fullTime", "")
-
-                                        if ft and ft not in ["", "C", None]:
-                                            match_result = f" [{ft}]"
+                                similar_match_id = similar_match_info[site_key].get("match_id")
+                                
+                                # ✅ Chercher dans cache Google Sheets
+                                if similar_match_id in results_cache[site_key]:
+                                    ft = results_cache[site_key][similar_match_id]
+                                    match_result = f" [{ft}]"
 
                         new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
                         new_row[f"Heure {i}"] = match.get('start_time', '')
@@ -1227,6 +1305,10 @@ class MultiSitesOddsTrackerFinal:
     async def _create_separate_sheets(self, odds_1x2_by_match: dict, combinations_index: dict):
         """Créer 4 feuilles séparées (1 colonne par match identique) - CORRECTION header dynamique"""
 
+        # ✅ NOUVEAU : Charger le cache des résultats depuis Google Sheets
+        print("   📊 Chargement résultats depuis 1X2_FullTime...")
+        results_cache = await self._build_results_cache_from_sheet()
+        
         # On reconstitue le mapping des compétitions à partir des combosIndex
         competitions = {}
         for site_key in self.SITE_ORDER:
@@ -1300,28 +1382,22 @@ class MultiSitesOddsTrackerFinal:
 
                 # Ajouter chaque match similaire dans sa colonne
                 for i, match in enumerate(matching_matches_sorted, start=1):
-                    match_name = match. get('match_name', '')
+                    match_name = match.get('match_name', '')
                     competition = match.get('competition', '')
-
-                    # Récupérer le résultat du MATCH SIMILAIRE
-                    match_result = ""
                     similar_external_id = match.get("external_id")
 
-                    # Si ce n'est pas un match historique (external_id != 0)
+                    # ✅ NOUVEAU : Récupérer résultat depuis Google Sheets
+                    match_result = ""
                     if similar_external_id and similar_external_id != 0:
                         similar_match_info = self.matches_info_archive.get(similar_external_id, {})
-
+                        
                         if similar_match_info and site_key in similar_match_info:
                             similar_match_id = similar_match_info[site_key].get("match_id")
-
-                            # Chercher dans le cache de résultats
-                            if site_key in self.match_results_cache:
-                                if similar_match_id in self.match_results_cache[site_key]:
-                                    result_data = self.match_results_cache[site_key][similar_match_id]
-                                    ft = result_data.get("fullTime", "")
-
-                                    if ft and ft not in ["", "C", None]:
-                                        match_result = f" [{ft}]"
+                            
+                            # ✅ Chercher dans cache Google Sheets (PAS API)
+                            if similar_match_id in results_cache[site_key]:
+                                ft = results_cache[site_key][similar_match_id]
+                                match_result = f" [{ft}]"
 
                     # Ajouter le résultat au nom du match
                     row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
