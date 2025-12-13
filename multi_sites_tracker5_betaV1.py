@@ -1019,7 +1019,9 @@ class MultiSitesOddsTrackerFinal:
                 if not match_name or not result or result == "C":
                     continue
                 
-                # Store result for all sites (duplicates will be overwritten with latest)
+                # Store result for all sites (match results are universal, not site-specific)
+                # The Résultat_FullTime column contains the actual match outcome (e.g., "1-1", "2-0")
+                # which is the same across all betting sites. Duplicates are overwritten with latest.
                 for site_key in self.SITE_ORDER:
                     results_cache[site_key][match_name] = result
             
