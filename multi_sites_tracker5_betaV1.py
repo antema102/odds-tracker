@@ -1169,8 +1169,8 @@ class MultiSitesOddsTrackerFinal:
                         # ✅ Lookup result directly by match name
                         match_result = ""
                         if match_name in results_cache.get(site_key, {}):
-                            ft = results_cache[site_key][match_name]
-                            match_result = f" [{ft}]"
+                            full_time_result = results_cache[site_key][match_name]
+                            match_result = f" [{full_time_result}]"
 
                         new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
                         new_row[f"Heure {i}"] = match.get('start_time', '')
@@ -1367,8 +1367,8 @@ class MultiSitesOddsTrackerFinal:
                     # ✅ Lookup result directly by match name
                     match_result = ""
                     if match_name in results_cache.get(site_key, {}):
-                        ft = results_cache[site_key][match_name]
-                        match_result = f" [{ft}]"
+                        full_time_result = results_cache[site_key][match_name]
+                        match_result = f" [{full_time_result}]"
 
                     # Ajouter le résultat au nom du match
                     row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
