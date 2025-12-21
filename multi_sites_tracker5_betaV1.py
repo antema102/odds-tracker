@@ -1185,12 +1185,7 @@ class MultiSitesOddsTrackerFinal:
                             match_result = f" [{full_time_result}]"
 
                         # ✅ NOUVEAU : Lookup Over/Under 2.5 FT par External ID
-                        over_under_odds = ""
-                        match_external_id = match.get('external_id', 0)
-                        if match_external_id and match_external_id in over_under_cache:
-                            ou_odds = over_under_cache[match_external_id].get(site_key, "")
-                            if ou_odds:
-                                over_under_odds = f" {ou_odds}"
+                        over_under_odds = self._get_over_under_odds_string(match, site_key, over_under_cache)
 
                         # Ajouter le résultat et les cotes O/U au nom du match
                         new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}{over_under_odds}"
@@ -1398,12 +1393,7 @@ class MultiSitesOddsTrackerFinal:
                         match_result = f" [{full_time_result}]"
 
                     # ✅ NOUVEAU : Lookup Over/Under 2.5 FT par External ID
-                    over_under_odds = ""
-                    match_external_id = match.get('external_id', 0)
-                    if match_external_id and match_external_id in over_under_cache:
-                        ou_odds = over_under_cache[match_external_id].get(site_key, "")
-                        if ou_odds:
-                            over_under_odds = f" {ou_odds}"
+                    over_under_odds = self._get_over_under_odds_string(match, site_key, over_under_cache)
 
                     # Ajouter le résultat et les cotes O/U au nom du match
                     row[f"Match {i}"] = f"{match_name} ({competition}){match_result}{over_under_odds}"
@@ -3252,7 +3242,7 @@ class MultiSitesOddsTrackerFinal:
                     continue
                 
                 # Récupérer cotes O/U pour chaque site
-                over_under_cache[external_id] = {}
+                site_odds = {}
                 
                 for site_key, col_index in site_columns.items():
                     if len(row) <= col_index:
@@ -3260,9 +3250,22 @@ class MultiSitesOddsTrackerFinal:
                     
                     odds_string = row[col_index].strip()
                     
-                    # Valider format "X.XX / X.XX"
+                    # Valider format "X.XX / X.XX" avec regex
                     if odds_string and "/" in odds_string:
-                        over_under_cache[external_id][site_key] = odds_string
+                        # Accepter format flexible mais avec slash
+                        parts = odds_string.split("/")
+                        if len(parts) == 2:
+                            try:
+                                # Vérifier que les deux parties sont des nombres valides
+                                float(parts[0].strip())
+                                float(parts[1].strip())
+                                site_odds[site_key] = odds_string
+                            except ValueError:
+                                continue
+                
+                # N'ajouter au cache que si au moins un site a des cotes
+                if site_odds:
+                    over_under_cache[external_id] = site_odds
             
             total_loaded = len(over_under_cache)
             print(f"      ✅ {total_loaded} matchs avec cotes Over/Under chargés")
@@ -3272,6 +3275,25 @@ class MultiSitesOddsTrackerFinal:
         except Exception as e:
             print(f"      ❌ Erreur chargement Over/Under : {e}")
             return over_under_cache
+
+    def _get_over_under_odds_string(self, match: dict, site_key: str, over_under_cache: Dict[int, Dict[str, str]]) -> str:
+        """
+        Récupérer la chaîne de cotes Over/Under pour un match donné
+        
+        Args:
+            match: Dictionnaire du match contenant 'external_id'
+            site_key: Clé du site (ex: "stevenhills")
+            over_under_cache: Cache des cotes O/U {external_id: {site_key: "1.65 / 1.70"}}
+            
+        Returns:
+            Chaîne formatée avec les cotes O/U (ex: " 1.65 / 1.70") ou chaîne vide
+        """
+        match_external_id = match.get('external_id', 0)
+        if match_external_id and match_external_id in over_under_cache:
+            ou_odds = over_under_cache[match_external_id].get(site_key, "")
+            if ou_odds:
+                return f" {ou_odds}"
+        return ""
 
     async def build_daily_combinaison_sheets(self):
         """Construire les 4 feuilles DailyCombinaison (VERSION OPTIMISÉE - Parse GetSport + Filtrage date)"""
