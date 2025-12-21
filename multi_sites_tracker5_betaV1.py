@@ -419,7 +419,8 @@ class GoogleSheetsManager:
                 # TIMEOUT via gspread
                 import socket
                 original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(60)  # ✅ ENHANCEMENT #6: Increased from 30s to 60s for slow connections
+                # ✅ ENHANCEMENT #6: Increased from 30s to 60s for slow connections
+                socket.setdefaulttimeout(60)
 
                 try:
                     result = func()
@@ -517,10 +518,11 @@ class GoogleSheetsManager:
                 # ✅ AJOUTER : Validation avant écriture
                 for i, row in enumerate(rows):
                     if list(row.keys()) != expected_header:
-                        print(f"         ⚠️  Ligne {i+1} décalage de colonnes!")
+                        print(
+                            f"         ⚠️  Ligne {i+1} décalage de colonnes!")
                         print(f"            Attendu: {expected_header}")
                         print(f"            Obtenu: {list(row.keys())}")
-                        
+
                 # Afficher les différences
                 self._ensure_header(worksheet, sheet_name, expected_header)
 
@@ -963,7 +965,7 @@ class MultiSitesOddsTrackerFinal:
     async def _build_results_cache_from_sheet(self) -> Dict[str, Dict[str, str]]:
         """
         Construire un cache des résultats depuis la feuille 1X2_FullTime
-        
+
         Returns:
             {
                 "stevenhills": {"Arsenal vs Chelsea": "1-1", "Manchester United vs Liverpool": "2-0"},
@@ -973,56 +975,58 @@ class MultiSitesOddsTrackerFinal:
             }
         """
         results_cache = {site_key: {} for site_key in self.SITE_ORDER}
-        
+
         try:
             worksheet = self.gsheets.get_or_create_worksheet("1X2_FullTime")
             if not worksheet:
                 return results_cache
-            
+
             def get_all():
                 return worksheet.get_all_values()
-            
+
             all_values = self.gsheets._execute_with_retry(get_all)
-            
+
             if not all_values or len(all_values) < 2:
                 return results_cache
-            
+
             header = all_values[0]
-            
+
             # Trouver la colonne Match
             try:
                 col_match = header.index("Match")
             except ValueError:
                 print("   ⚠️  Colonne Match manquante")
                 return results_cache
-            
+
             # Trouver colonne résultat
             try:
                 col_result = header.index("Résultat_FullTime")
             except ValueError:
                 print("   ⚠️  Colonne Résultat_FullTime manquante")
                 return results_cache
-            
+
             # Parser les résultats
             for row in all_values[1:]:
                 if len(row) <= max(col_match, col_result):
                     continue
-                
+
                 match_name = row[col_match]
                 result = row[col_result]
-                
+
                 # Seulement si match_name et résultat valides
                 if not match_name or not result or result == "C":
                     continue
-                
+
                 # Ajouter le résultat pour tous les sites
                 for site_key in self.SITE_ORDER:
                     results_cache[site_key][match_name] = result
-            
-            total_results = sum(len(site_cache) for site_cache in results_cache.values())
-            print(f"   📊 Cache résultats chargé : {total_results} résultats depuis Google Sheets")
+
+            total_results = sum(len(site_cache)
+                                for site_cache in results_cache.values())
+            print(
+                f"   📊 Cache résultats chargé : {total_results} résultats depuis Google Sheets")
             return results_cache
-            
+
         except Exception as e:
             print(f"   ❌ Erreur cache résultats : {e}")
             return results_cache
@@ -1034,7 +1038,7 @@ class MultiSitesOddsTrackerFinal:
             # ✅ NOUVEAU : Charger cache depuis Google Sheets
             print("   📊 Chargement résultats depuis 1X2_FullTime...")
             results_cache = await self._build_results_cache_from_sheet()
-            
+
             # Récupérer noms des matchs modifiés
             changed_match_names = set()
             for external_id in changed_matches.keys():
@@ -1085,34 +1089,38 @@ class MultiSitesOddsTrackerFinal:
 
                 # ✅ NOUVEAU : Mettre à jour SEULEMENT les matchs modifiés
                 updated_count = 0
-                
+
                 # ✅ BUG FIX #1: Calculate max number of similar matches across ALL changed matches
                 max_matches_per_row = 0
                 for external_id in changed_matches.keys():
                     match_info = self.matches_info_archive.get(external_id, {})
                     if not match_info:
                         continue
-                    sites_odds = self.daily_combinaison_cache.get(external_id, {})
+                    sites_odds = self.daily_combinaison_cache.get(
+                        external_id, {})
                     if site_key not in sites_odds:
                         continue
-                    
+
                     odds_string = sites_odds[site_key]
                     odds_key = odds_string.replace(" ", "")
-                    all_matches = combinations_index[site_key].get(odds_key, [])
-                    matching_matches = [m for m in all_matches if m.get("external_id") != external_id]
-                    
+                    all_matches = combinations_index[site_key].get(
+                        odds_key, [])
+                    matching_matches = [m for m in all_matches if m.get(
+                        "external_id") != external_id]
+
                     if len(matching_matches) > max_matches_per_row:
                         max_matches_per_row = len(matching_matches)
-                
+
                 # ✅ BUG FIX #1: Rebuild dynamic header
-                base_header = ["Date", "Match Principal", "Compétition", "Heure Match", "Cotes 1X2"]
+                base_header = ["Date", "Match Principal",
+                               "Compétition", "Heure Match", "Cotes 1X2"]
                 for i in range(1, max_matches_per_row + 1):
                     base_header.append(f"Match {i}")
                     base_header.append(f"Heure {i}")
                 base_header.append("Nombre Total")
-                
+
                 header = base_header  # Use dynamic header
-                
+
                 # ✅ BUG FIX #1: Pad existing rows with empty strings if they have fewer columns
                 for match_name, row in existing_rows.items():
                     if len(row) < len(header):
@@ -1165,7 +1173,7 @@ class MultiSitesOddsTrackerFinal:
                     for i, match in enumerate(matching_matches_sorted, start=1):
                         match_name = match.get('match_name', '')
                         competition = match.get('competition', '')
-                        
+
                         # ✅ Lookup result directly by match name
                         match_result = ""
                         if match_name in results_cache.get(site_key, {}):
@@ -1243,11 +1251,11 @@ class MultiSitesOddsTrackerFinal:
                 odds_1x2 = self._extract_1x2_from_getsport_match(match_str)
                 if not odds_1x2:
                     continue
-                
+
                 # ✅ BUG FIX #3: Capture old value FIRST (before updating cache)
                 old_odds = self.daily_combinaison_cache.get(
                     external_id, {}).get(site_key)
-                
+
                 # ✅ BUG FIX #3: Check for changes BEFORE updating cache
                 if old_odds is not None and old_odds != odds_1x2:
                     # LOG le changement !
@@ -1261,7 +1269,7 @@ class MultiSitesOddsTrackerFinal:
                         "match_name": match_info.get("match_name", ""),
                         "site_key": site_key
                     }
-                
+
                 # ✅ BUG FIX #3: Update cache AFTER comparison
                 if external_id not in self.daily_combinaison_cache:
                     self.daily_combinaison_cache[external_id] = {}
@@ -1287,7 +1295,7 @@ class MultiSitesOddsTrackerFinal:
         # ✅ NOUVEAU : Charger le cache des résultats depuis Google Sheets
         print("   📊 Chargement résultats depuis 1X2_FullTime...")
         results_cache = await self._build_results_cache_from_sheet()
-        
+
         # On reconstitue le mapping des compétitions à partir des combosIndex
         competitions = {}
         for site_key in self.SITE_ORDER:
@@ -1338,7 +1346,8 @@ class MultiSitesOddsTrackerFinal:
 
                 # Récupérer matchs identiques
                 all_matches = combinations_index[site_key].get(odds_key, [])
-                matching_matches = [m for m in all_matches if m.get("external_id") != external_id]
+                matching_matches = [m for m in all_matches if m.get(
+                    "external_id") != external_id]
 
                 if matching_matches:
                     match_has_combos = True
@@ -1347,7 +1356,8 @@ class MultiSitesOddsTrackerFinal:
                 # Trier par heure et limiter au maximum défini
                 matching_matches_sorted = sorted(
                     matching_matches,
-                    key=lambda m: self._get_time_until_match(m["start_time"]) or 9999
+                    key=lambda m: self._get_time_until_match(
+                        m["start_time"]) or 9999
                 )[:self.MAX_MATCHING_MATCHES]
 
                 # Créer la ligne de base
@@ -1363,7 +1373,7 @@ class MultiSitesOddsTrackerFinal:
                 for i, match in enumerate(matching_matches_sorted, start=1):
                     match_name = match.get('match_name', '')
                     competition = match.get('competition', '')
-                    
+
                     # ✅ Lookup result directly by match name
                     match_result = ""
                     if match_name in results_cache.get(site_key, {}):
@@ -1385,17 +1395,46 @@ class MultiSitesOddsTrackerFinal:
         self.daily_combo_matches_with_combos = matches_with_combos
         self.daily_combo_total_combinations = total_combinations
 
+        # ✅ NOUVEAU : Fonction de tri par heure de match
+        def parse_match_time(time_str: str) -> datetime:
+            """Convertir 'Heure Match' en datetime pour tri"""
+            try:
+                time_str_clean = time_str.replace(',', '').strip()
+                current_year = now_mauritius().year
+                if str(current_year) not in time_str_clean:
+                    time_str_clean = f"{time_str_clean} {current_year}"
+
+                match_dt = date_parser.parse(time_str_clean)
+                if match_dt.tzinfo is None:
+                    match_dt = match_dt.replace(tzinfo=MAURITIUS_TZ)
+                return match_dt
+            except:
+                # Mettre à la fin si erreur
+                return datetime.max.replace(tzinfo=MAURITIUS_TZ)
+            
+        # ✅ NOUVEAU : Trier chaque feuille par heure de match (croissant)
+        print(f"\n   🔄 Tri des données par heure de match...")
+        for sheet_name, rows in sheets_data.items():
+            if rows:
+                sheets_data[sheet_name] = sorted(
+                    rows, 
+                    key=lambda row: parse_match_time(row.get("Heure Match", ""))
+                )
+                print(f"      ✅ {sheet_name}: {len(rows)} lignes triées")
+
         # ✅ NOUVEAU : Calculer le nombre MAX de matchs similaires pour créer le header dynamique
         max_matches_per_row = 0
         for sheet_name, rows in sheets_data.items():
             for row in rows:
                 # Compter combien de colonnes "Match X" existent
-                match_columns = [k for k in row.keys() if k.startswith("Match ")]
+                match_columns = [
+                    k for k in row.keys() if k.startswith("Match ")]
                 if len(match_columns) > max_matches_per_row:
                     max_matches_per_row = len(match_columns)
 
         if max_matches_per_row > 0:
-            print(f"   📊 Maximum {max_matches_per_row} matchs similaires par ligne")
+            print(
+                f"   📊 Maximum {max_matches_per_row} matchs similaires par ligne")
 
         # Envoyer chaque feuille AVEC HEADER DYNAMIQUE
         for sheet_name, rows in sheets_data.items():
@@ -1406,13 +1445,14 @@ class MultiSitesOddsTrackerFinal:
             print(f"   📤 {sheet_name} : {len(rows)} ligne(s)...")
 
             # ✅ NOUVEAU : Créer le header dynamique
-            base_header = ["Date", "Match Principal", "Compétition", "Heure Match", "Cotes 1X2"]
-            
+            base_header = ["Date", "Match Principal",
+                           "Compétition", "Heure Match", "Cotes 1X2"]
+
             # Ajouter colonnes pour matchs similaires
             for i in range(1, max_matches_per_row + 1):
                 base_header.append(f"Match {i}")
                 base_header.append(f"Heure {i}")
-            
+
             base_header.append("Nombre Total")
 
             # ✅ NOUVEAU : Garantir que TOUTES les lignes ont TOUTES les colonnes du header
@@ -1420,7 +1460,8 @@ class MultiSitesOddsTrackerFinal:
             for row in rows:
                 normalized_row = {}
                 for col in base_header:
-                    normalized_row[col] = row.get(col, "")  # Remplir avec "" si absent
+                    # Remplir avec "" si absent
+                    normalized_row[col] = row.get(col, "")
                 normalized_rows.append(normalized_row)
 
             # Envoyer par batch
@@ -2161,7 +2202,7 @@ class MultiSitesOddsTrackerFinal:
 
         for market_key in all_market_keys:
             sheet_name = MARKET_SHEET_MAPPING.get(market_key, market_key[:31])
-            
+
             # ✅ CRITIQUE : Construire les données de ligne avec ordre EXPLICITE
             row_data = base_data.copy()
 
@@ -2170,7 +2211,8 @@ class MultiSitesOddsTrackerFinal:
                 site_name = SITES[site_key]["name"]
 
                 if site_key in self.captured_odds[external_id]:
-                    markets = self. captured_odds[external_id][site_key].get("markets", {})
+                    markets = self. captured_odds[external_id][site_key].get(
+                        "markets", {})
                     if market_key in markets:
                         odds_str = self._format_odds_for_display(
                             markets[market_key]. get("odds", {}))
@@ -2185,10 +2227,11 @@ class MultiSitesOddsTrackerFinal:
                 site_name = SITES[site_key]["name"]
                 match_info = matches_info.get(site_key)
                 if match_info:
-                    row_data[f"matchID_{site_name}"] = match_info.get("match_id", "")
+                    row_data[f"matchID_{site_name}"] = match_info.get(
+                        "match_id", "")
                 else:
                     row_data[f"matchID_{site_name}"] = ""
-            
+
             # Ajouter la colonne résultat selon le nom de la feuille (APRÈS cotes et matchID)
             if sheet_name == "1X2_FullTime":
                 row_data["Résultat_FullTime"] = ""
@@ -2207,7 +2250,7 @@ class MultiSitesOddsTrackerFinal:
                 "StevenHills", "SuperScore", "ToteLePEP", "PlayOnline",
                 "matchID_StevenHills", "matchID_SuperScore", "matchID_ToteLePEP", "matchID_PlayOnline",
             ]
-            
+
             # Ajouter la colonne résultat au header selon le nom de la feuille
             if sheet_name == "1X2_FullTime":
                 header.append("Résultat_FullTime")
@@ -2222,7 +2265,7 @@ class MultiSitesOddsTrackerFinal:
 
             # ✅ CRITIQUE : Convertir en dict ordonné correspondant EXACTEMENT au header
             final_row_dict = {col: row_data. get(col, "") for col in header}
-            
+
             # ✅ VALIDATION : Vérifier l'alignement
             if set(final_row_dict.keys()) != set(header):
                 missing = set(header) - set(final_row_dict.keys())
@@ -2238,7 +2281,6 @@ class MultiSitesOddsTrackerFinal:
             sheets_data[sheet_name].append(final_row_dict)
 
         return sheets_data
-    
 
     def _validate_column_alignment(self, sheet_name: str, header: List[str], rows: List[Dict]) -> bool:
         """Valider que toutes les lignes ont les bonnes colonnes dans le bon ordre"""
@@ -2247,7 +2289,7 @@ class MultiSitesOddsTrackerFinal:
                 print(f"❌ Erreur d'alignement dans {sheet_name}, ligne {i+1}:")
                 print(f"   Attendu: {header}")
                 print(f"   Obtenu:  {list(row.keys())}")
-                
+
                 # Afficher les différences
                 missing = [col for col in header if col not in row]
                 extra = [col for col in row if col not in header]
@@ -2304,7 +2346,8 @@ class MultiSitesOddsTrackerFinal:
             for site_key in self.SITE_ORDER:
                 site_name = SITES[site_key]["name"]
                 try:
-                    matchid_cols[site_key] = header.index(f"matchID_{site_name}")
+                    matchid_cols[site_key] = header.index(
+                        f"matchID_{site_name}")
                 except ValueError:
                     matchid_cols[site_key] = None
 
@@ -2316,7 +2359,8 @@ class MultiSitesOddsTrackerFinal:
                     continue
 
                 date_str = row[col_date] if col_date < len(row) else ""
-                existing_result = row[col_result] if col_result < len(row) else ""
+                existing_result = row[col_result] if col_result < len(
+                    row) else ""
 
                 # Skip si résultat déjà rempli
                 if existing_result and existing_result not in ["", "C"]:
@@ -2341,7 +2385,8 @@ class MultiSitesOddsTrackerFinal:
                 print(f"      ✅ Tous les résultats sont à jour")
                 continue
 
-            print(f"      📅 {len(dates_needing_results)} date(s) avec résultats manquants")
+            print(
+                f"      📅 {len(dates_needing_results)} date(s) avec résultats manquants")
 
             # ✅ NOUVEAU : Trier les dates par ordre chronologique
             sorted_dates = sorted(dates_needing_results.keys())
@@ -2349,8 +2394,9 @@ class MultiSitesOddsTrackerFinal:
             # ✅ NOUVEAU : Pour chaque date, faire 1 POST et compléter
             for date_str in sorted_dates:
                 row_indices = dates_needing_results[date_str]
-                
-                print(f"\n      📆 Traitement date {date_str} ({len(row_indices)} ligne(s))...")
+
+                print(
+                    f"\n      📆 Traitement date {date_str} ({len(row_indices)} ligne(s))...")
 
                 # Convertir date format YYYY-MM-DD vers DD/MM/YYYY
                 try:
@@ -2389,22 +2435,27 @@ class MultiSitesOddsTrackerFinal:
                                     "secondHalfTime": match.get("secondHalfTime", "")
                                 }
 
-                total_results_for_date = sum(len(r) for r in results_by_site.values())
+                total_results_for_date = sum(len(r)
+                                             for r in results_by_site.values())
 
                 if total_results_for_date == 0:
-                    print(f"         ⚠️ Aucun résultat disponible pour {date_formatted}")
+                    print(
+                        f"         ⚠️ Aucun résultat disponible pour {date_formatted}")
                     continue
 
-                print(f"         ✅ {total_results_for_date} résultats récupérés")
+                print(
+                    f"         ✅ {total_results_for_date} résultats récupérés")
 
                 # Mettre à jour les lignes de cette date
                 updates_made = 0
 
                 for row_index in row_indices:
-                    row = all_values[row_index - 1]  # -1 car all_values inclut header
+                    # -1 car all_values inclut header
+                    row = all_values[row_index - 1]
 
                     # Skip si résultat déjà rempli (double check)
-                    existing_result = row[col_result] if col_result < len(row) else ""
+                    existing_result = row[col_result] if col_result < len(
+                        row) else ""
                     if existing_result and existing_result not in ["", "C"]:
                         continue
 
@@ -2450,16 +2501,17 @@ class MultiSitesOddsTrackerFinal:
 
                             await asyncio.sleep(1)
                         except Exception as e:
-                            print(f"         ❌ Erreur update ligne {row_index}: {e}")
+                            print(
+                                f"         ❌ Erreur update ligne {row_index}: {e}")
                             continue
 
                 if updates_made > 0:
-                    print(f"         ✅ {updates_made} résultat(s) ajouté(s) pour {date_str}")
+                    print(
+                        f"         ✅ {updates_made} résultat(s) ajouté(s) pour {date_str}")
 
         print(f"\n{'='*70}")
         print(f"✅ Total: {total_updates} résultat(s) ajouté(s)")
         print(f"{'='*70}\n")
-
 
     async def fetch_match_results(self, site_key: str, date: str) -> Optional[dict]:
         """
@@ -2948,12 +3000,12 @@ class MultiSitesOddsTrackerFinal:
 
             # Format identique à _extract_1x2_full_time
             odds_formatted = f"{home_odd:.2f} / {draw_odd:.2f} / {away_odd:.2f}"
-            
+
             # ✅ ENHANCEMENT #7: Validate format
             import re
             if not re.match(r'^\d+\.\d{2} / \d+\.\d{2} / \d+\.\d{2}$', odds_formatted):
                 return None
-            
+
             return odds_formatted
 
         except (ValueError, IndexError, AttributeError):
@@ -3140,7 +3192,8 @@ class MultiSitesOddsTrackerFinal:
 
                     try:
                         # Parser la date du match
-                        match_time_str = start_time_str.replace(',', '').strip()
+                        match_time_str = start_time_str.replace(
+                            ',', '').strip()
                         current_year = now_mauritius().year
                         if str(current_year) not in match_time_str:
                             match_time_str = f"{match_time_str} {current_year}"
@@ -3150,7 +3203,8 @@ class MultiSitesOddsTrackerFinal:
                             match_dt = match_dt.replace(tzinfo=MAURITIUS_TZ)
 
                         # ✅ BUG FIX #4: Use 24-hour window (0-24 hours in the future)
-                        time_diff_hours = (match_dt - now_mauritius()).total_seconds() / 3600
+                        time_diff_hours = (
+                            match_dt - now_mauritius()).total_seconds() / 3600
                         if not (0 <= time_diff_hours <= 24):
                             filtered_out_count += 1
                             continue
@@ -3170,10 +3224,12 @@ class MultiSitesOddsTrackerFinal:
                     self.matches_info_archive[external_id][site_key] = match_info
 
             total_matches = len(all_matches)
-            print(f"   ✅ {total_matches} matchs récupérés (du {self.current_date})")
+            print(
+                f"   ✅ {total_matches} matchs récupérés (du {self.current_date})")
 
             if filtered_out_count > 0:
-                print(f"   🔍 {filtered_out_count} match(s) filtré(s) (autre date)")
+                print(
+                    f"   🔍 {filtered_out_count} match(s) filtré(s) (autre date)")
 
             if total_matches == 0:
                 print(f"   ⚠️  Aucun match à analyser")
@@ -3246,7 +3302,8 @@ class MultiSitesOddsTrackerFinal:
 
                                 # ✅ AJOUT : Mettre à jour le cache combo immédiatement
                                 if external_id not in self.daily_combinaison_cache:
-                                    self.daily_combinaison_cache[external_id] = {}
+                                    self.daily_combinaison_cache[external_id] = {
+                                    }
                                 self.daily_combinaison_cache[external_id][site_key] = odds_1x2
 
                                 site_success += 1
@@ -3255,9 +3312,11 @@ class MultiSitesOddsTrackerFinal:
                         except Exception:
                             continue
 
-                print(f"      ✅ {site_name:15s}: {site_success} cotes extraites")
+                print(
+                    f"      ✅ {site_name:15s}: {site_success} cotes extraites")
 
-            matches_with_odds = len([m for m in odds_1x2_by_match.values() if m])
+            matches_with_odds = len(
+                [m for m in odds_1x2_by_match.values() if m])
             print(
                 f"   ✅ {matches_with_odds} matchs avec cotes valides ({success_count} extractions)")
 
@@ -3320,7 +3379,6 @@ class MultiSitesOddsTrackerFinal:
             self._disable_auto_save = False
             self.save_cache_to_disk(force=True)
 
-
     def _get_active_matches_for_daily_combo(self):
         """
         Retourne la liste des external_id des matchs actifs éligibles à la détection de combination.
@@ -3332,7 +3390,7 @@ class MultiSitesOddsTrackerFinal:
             # ✅ BUG FIX #5: Skip completed matches to prevent memory leak
             if external_id in self.completed_matches:
                 continue
-            
+
             # Récupère la première info du match
             if not match_info_dict:
                 continue
@@ -3436,7 +3494,8 @@ class MultiSitesOddsTrackerFinal:
                                 current_odds_by_site[site_key][external_id] = odds_1x2
                                 # MAJ cache RAM :
                                 if external_id not in self.daily_combinaison_cache:
-                                    self.daily_combinaison_cache[external_id] = {}
+                                    self.daily_combinaison_cache[external_id] = {
+                                    }
                                 self.daily_combinaison_cache[external_id][site_key] = odds_1x2
                         except Exception:
                             continue
@@ -3449,7 +3508,8 @@ class MultiSitesOddsTrackerFinal:
             print(f"   🔗 Fusion RAM + historique...")
 
             historical_index = await self._load_historical_odds_from_gsheets()
-            new_combinations_index = {site_key: {} for site_key in SITES.keys()}
+            new_combinations_index = {site_key: {}
+                                      for site_key in SITES.keys()}
 
             for site_key in self.SITE_ORDER:
                 # Ajouter les matchs du jour
@@ -3477,7 +3537,7 @@ class MultiSitesOddsTrackerFinal:
             # changed_matches = {external_id: {...}} -- on met tous les actifs
             # (le contenu n'a pas d'importance dans ta fonction downstream, c'est la clé qui compte)
             changed_matches = {external_id: {"ALL": True}
-                            for external_id in active_matches}
+                               for external_id in active_matches}
 
             # 6. MAJ Sheets en reconstruisant toutes les lignes combos
             print(f"   📝 Reconstruction complète des feuilles DailyCombinaison...")
@@ -3486,7 +3546,7 @@ class MultiSitesOddsTrackerFinal:
         finally:
             self._disable_auto_save = False
             self.save_cache_to_disk(force=True)
-        
+
     async def _update_summary_sheet_incremental(self, changed_matches: dict, combinations_index: dict):
         """Mettre à jour UNIQUEMENT les lignes modifiées dans DailyCombinaison"""
 
