@@ -1039,6 +1039,10 @@ class MultiSitesOddsTrackerFinal:
             print("   📊 Chargement résultats depuis 1X2_FullTime...")
             results_cache = await self._build_results_cache_from_sheet()
 
+            # ✅ NOUVEAU : Charger Over/Under 2.5 FT depuis Google Sheets
+            print("   📊 Chargement Over/Under 2.5 FT...")
+            over_under_cache = await self._load_over_under_from_gsheets()
+
             # Récupérer noms des matchs modifiés
             changed_match_names = set()
             for external_id in changed_matches.keys():
@@ -1180,7 +1184,16 @@ class MultiSitesOddsTrackerFinal:
                             full_time_result = results_cache[site_key][match_name]
                             match_result = f" [{full_time_result}]"
 
-                        new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
+                        # ✅ NOUVEAU : Lookup Over/Under 2.5 FT par External ID
+                        over_under_odds = ""
+                        match_external_id = match.get('external_id', 0)
+                        if match_external_id and match_external_id in over_under_cache:
+                            ou_odds = over_under_cache[match_external_id].get(site_key, "")
+                            if ou_odds:
+                                over_under_odds = f" {ou_odds}"
+
+                        # Ajouter le résultat et les cotes O/U au nom du match
+                        new_row[f"Match {i}"] = f"{match_name} ({competition}){match_result}{over_under_odds}"
                         new_row[f"Heure {i}"] = match.get('start_time', '')
 
                     new_row["Nombre Total"] = len(matching_matches_sorted)
@@ -1296,6 +1309,10 @@ class MultiSitesOddsTrackerFinal:
         print("   📊 Chargement résultats depuis 1X2_FullTime...")
         results_cache = await self._build_results_cache_from_sheet()
 
+        # ✅ NOUVEAU : Charger Over/Under 2.5 FT depuis Google Sheets
+        print("   📊 Chargement Over/Under 2.5 FT...")
+        over_under_cache = await self._load_over_under_from_gsheets()
+
         # On reconstitue le mapping des compétitions à partir des combosIndex
         competitions = {}
         for site_key in self.SITE_ORDER:
@@ -1380,8 +1397,16 @@ class MultiSitesOddsTrackerFinal:
                         full_time_result = results_cache[site_key][match_name]
                         match_result = f" [{full_time_result}]"
 
-                    # Ajouter le résultat au nom du match
-                    row[f"Match {i}"] = f"{match_name} ({competition}){match_result}"
+                    # ✅ NOUVEAU : Lookup Over/Under 2.5 FT par External ID
+                    over_under_odds = ""
+                    match_external_id = match.get('external_id', 0)
+                    if match_external_id and match_external_id in over_under_cache:
+                        ou_odds = over_under_cache[match_external_id].get(site_key, "")
+                        if ou_odds:
+                            over_under_odds = f" {ou_odds}"
+
+                    # Ajouter le résultat et les cotes O/U au nom du match
+                    row[f"Match {i}"] = f"{match_name} ({competition}){match_result}{over_under_odds}"
                     row[f"Heure {i}"] = match.get('start_time', '')
 
                 row["Nombre Total"] = len(matching_matches_sorted)
@@ -3161,6 +3186,92 @@ class MultiSitesOddsTrackerFinal:
             print(f"      ❌ Erreur chargement historique : {e}")
             traceback.print_exc()
             return historical_index
+
+    async def _load_over_under_from_gsheets(self) -> Dict[int, Dict[str, str]]:
+        """
+        Charger les cotes Over/Under 2.5 FT depuis Google Sheets
+        
+        Returns:
+            {
+                external_id: {
+                    "stevenhills": "1.65 / 1.70",
+                    "superscore": "1.68 / 1.72",
+                    "totelepep": "1.70 / 1.75",
+                    "playonlineltd": "1.62 / 1.68"
+                }
+            }
+        """
+        print(f"   📊 Chargement Over/Under 2.5 FT depuis Google Sheets...")
+        
+        over_under_cache = {}  # {external_id: {site_key: "1.65 / 1.70"}}
+        
+        try:
+            worksheet = self.gsheets.get_or_create_worksheet("OverUnder_2.5_FT")
+            
+            if not worksheet:
+                return over_under_cache
+            
+            def get_all():
+                return worksheet.get_all_values()
+            
+            all_values = self.gsheets._execute_with_retry(get_all)
+            
+            if not all_values or len(all_values) < 2:
+                print(f"      ⚠️  Feuille OverUnder_2.5_FT vide")
+                return over_under_cache
+            
+            header = all_values[0]
+            
+            # Trouver colonnes nécessaires
+            try:
+                col_external_id = header.index("External ID")
+            except ValueError:
+                print(f"      ❌ Colonne 'External ID' manquante")
+                return over_under_cache
+            
+            # Trouver colonnes des sites
+            site_columns = {}
+            for site_key in self.SITE_ORDER:
+                site_name = SITES[site_key]["name"]
+                try:
+                    site_columns[site_key] = header.index(site_name)
+                except ValueError:
+                    continue
+            
+            # Parser chaque ligne
+            for row in all_values[1:]:  # Skip header
+                if len(row) <= col_external_id:
+                    continue
+                
+                try:
+                    external_id = int(row[col_external_id])
+                except (ValueError, IndexError):
+                    continue
+                
+                if external_id == 0:
+                    continue
+                
+                # Récupérer cotes O/U pour chaque site
+                over_under_cache[external_id] = {}
+                
+                for site_key, col_index in site_columns.items():
+                    if len(row) <= col_index:
+                        continue
+                    
+                    odds_string = row[col_index].strip()
+                    
+                    # Valider format "X.XX / X.XX"
+                    if odds_string and "/" in odds_string:
+                        over_under_cache[external_id][site_key] = odds_string
+            
+            total_loaded = len(over_under_cache)
+            print(f"      ✅ {total_loaded} matchs avec cotes Over/Under chargés")
+            
+            return over_under_cache
+        
+        except Exception as e:
+            print(f"      ❌ Erreur chargement Over/Under : {e}")
+            return over_under_cache
 
     async def build_daily_combinaison_sheets(self):
         """Construire les 4 feuilles DailyCombinaison (VERSION OPTIMISÉE - Parse GetSport + Filtrage date)"""
